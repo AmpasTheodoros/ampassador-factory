@@ -31,8 +31,10 @@ async function open(): Promise<DbHandle> {
     await embedded.exec(LOCAL_AUTH_SQL);
   }
   const database = new PgliteDatabase(embedded);
-  if (authProviderName(env) === "local" && env.AAF_DEV_EMAIL && env.AAF_DEV_PASSWORD) await seedDevUser(database, env.AAF_DEV_EMAIL, env.AAF_DEV_PASSWORD);
-  if (authProviderName(env) === "local" && env.AAF_DEV_EMAIL_2 && env.AAF_DEV_PASSWORD_2) await seedDevUser(database, env.AAF_DEV_EMAIL_2, env.AAF_DEV_PASSWORD_2);
+  if (authProviderName(env) === "local" && env.AAF_DEV_EMAIL && env.AAF_DEV_PASSWORD)
+    await seedDevUser(database, env.AAF_DEV_EMAIL, env.AAF_DEV_PASSWORD);
+  if (authProviderName(env) === "local" && env.AAF_DEV_EMAIL_2 && env.AAF_DEV_PASSWORD_2)
+    await seedDevUser(database, env.AAF_DEV_EMAIL_2, env.AAF_DEV_PASSWORD_2);
   return { database, embedded };
 }
 

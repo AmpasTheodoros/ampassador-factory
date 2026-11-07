@@ -1,0 +1,13 @@
+node_modules
+.next
+.data
+dist
+test-results
+*.patch
+pnpm-lock.yaml
+*.sql
+docs
+.claude
+apps/command-center/next-env.d.ts
+embedded_ai_company_os_master_prompt.md
+.gitattributes

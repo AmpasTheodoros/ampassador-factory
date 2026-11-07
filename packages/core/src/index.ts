@@ -21,7 +21,15 @@ export const RiskTier = z.enum(["read", "draft", "write_low", "external_communic
 export type RiskTier = z.infer<typeof RiskTier>;
 
 export const ApprovalStatus = z.enum([
-  "proposed", "awaiting_approval", "approved", "rejected", "expired", "executing", "succeeded", "failed", "unknown_outcome",
+  "proposed",
+  "awaiting_approval",
+  "approved",
+  "rejected",
+  "expired",
+  "executing",
+  "succeeded",
+  "failed",
+  "unknown_outcome",
 ]);
 export type ApprovalStatus = z.infer<typeof ApprovalStatus>;
 
@@ -57,14 +65,26 @@ export function makeEvent(
   const now = new Date().toISOString();
   const dedupeKey = i.externalId ? `${i.source}:${i.externalId}` : `${i.source}:${i.type}:${payloadHash(i.payload)}`;
   return EventEnvelope.parse({
-    id: newId(), workspaceId: i.workspaceId, source: i.source, externalId: i.externalId, type: i.type,
-    occurredAt: i.occurredAt ?? now, receivedAt: now, correlationId: i.correlationId ?? newId(),
-    payloadVersion: i.payloadVersion ?? 1, payload: i.payload, dedupeKey,
+    id: newId(),
+    workspaceId: i.workspaceId,
+    source: i.source,
+    externalId: i.externalId,
+    type: i.type,
+    occurredAt: i.occurredAt ?? now,
+    receivedAt: now,
+    correlationId: i.correlationId ?? newId(),
+    payloadVersion: i.payloadVersion ?? 1,
+    payload: i.payload,
+    dedupeKey,
   });
 }
 
 export class DomainError extends Error {
-  constructor(public code: string, message: string, public details?: unknown) {
+  constructor(
+    public code: string,
+    message: string,
+    public details?: unknown,
+  ) {
     super(message);
     this.name = "DomainError";
   }
@@ -72,7 +92,7 @@ export class DomainError extends Error {
 
 /** Provenance attached to anything the Brain recommends. */
 export const Provenance = z.object({
-  source: z.string(),            // system of record, e.g. "manual", "networkradar"
+  source: z.string(), // system of record, e.g. "manual", "networkradar"
   recordId: z.string().optional(),
   retrievedAt: z.string().datetime(),
   note: z.string().optional(),

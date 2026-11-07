@@ -11,14 +11,25 @@ export default async function Approvals({ searchParams }: { searchParams: Promis
     if (app.role === "owner" || app.role === "admin") await app.gateway.expireStale(app.workspaceId);
     const sel = id ? await app.store.getApproval(app.workspaceId, id) : undefined;
     return {
-      rows: await app.store.listApprovals(app.workspaceId), sel,
+      rows: await app.store.listApprovals(app.workspaceId),
+      sel,
       receipts: sel ? await app.store.listReceipts(app.workspaceId, id!) : [],
       audit: sel ? await app.store.listAudit(app.workspaceId, "approval", id) : [],
       role: app.role,
     };
   });
   const payload = sel?.["payload"] as { to?: string; subject?: string; body?: string } | undefined;
-  const ctx = (sel?.["sourceContext"] ?? {}) as { flags?: string[]; provenance?: never[]; isDemo?: boolean; delivery?: string; intent?: string; draftSource?: string; draftModel?: string | null; classification?: { by: string; model: string | null }; facts?: { label: string; value: string; status: "verified" | "unverified"; source: string }[] };
+  const ctx = (sel?.["sourceContext"] ?? {}) as {
+    flags?: string[];
+    provenance?: never[];
+    isDemo?: boolean;
+    delivery?: string;
+    intent?: string;
+    draftSource?: string;
+    draftModel?: string | null;
+    classification?: { by: string; model: string | null };
+    facts?: { label: string; value: string; status: "verified" | "unverified"; source: string }[];
+  };
   const canDecide = role === "owner" || role === "admin";
   const status = String(sel?.["status"] ?? "");
   const double = sel?.["riskTier"] === "financial_or_irreversible";
@@ -27,80 +38,191 @@ export default async function Approvals({ searchParams }: { searchParams: Promis
 
   return (
     <>
-      <PageTitle title="Approvals" sub="Every outbound action waits here. Approval covers the exact payload shown, identified by its hash." />
-      {error && <p role="alert" className="mb-3 text-sm" style={{ color: "var(--bad)" }}>{error}</p>}
+      <PageTitle
+        title="Approvals"
+        sub="Every outbound action waits here. Approval covers the exact payload shown, identified by its hash."
+      />
+      {error && (
+        <p role="alert" className="mb-3 text-sm c-bad">
+          {error}
+        </p>
+      )}
       <div className="grid gap-4 md:grid-cols-[20rem_1fr]">
         <Card title="Queue">
-          {rows.length === 0 ? <Empty>Nothing proposed yet. Triage a message in the Inbox.</Empty> : (
+          {rows.length === 0 ? (
+            <Empty>Nothing proposed yet. Triage a message in the Inbox.</Empty>
+          ) : (
             <ul className="space-y-1">
               {rows.map((r) => (
                 <li key={String(r["id"])}>
-                  <Link href={`/approvals?id=${r["id"]}`} className={`block rounded-md p-2 text-sm hover:bg-[var(--line)] ${r["id"] === id ? "bg-[var(--line)]" : ""}`}>
+                  <Link
+                    href={`/approvals?id=${r["id"]}`}
+                    className={`block rounded-md p-2 text-sm hover:bg-[var(--line)] ${r["id"] === id ? "bg-[var(--line)]" : ""}`}
+                  >
                     <div className="font-medium">{String(r["summary"])}</div>
-                    <div className="muted flex items-center gap-1 text-xs"><StatusBadge s={String(r["status"])} />{(r["sourceContext"] as { isDemo?: boolean }).isDemo ? <DemoBadge /> : null}<Badge>{String(r["riskTier"]).replaceAll("_", " ")}</Badge></div>
+                    <div className="muted flex items-center gap-1 text-xs">
+                      <StatusBadge s={String(r["status"])} />
+                      {(r["sourceContext"] as { isDemo?: boolean }).isDemo ? <DemoBadge /> : null}
+                      <Badge>{String(r["riskTier"]).replaceAll("_", " ")}</Badge>
+                    </div>
                   </Link>
                 </li>
               ))}
             </ul>
           )}
         </Card>
-        {!sel ? <Empty>Select a proposal to review the exact content, its source and its history.</Empty> : (
+        {!sel ? (
+          <Empty>Select a proposal to review the exact content, its source and its history.</Empty>
+        ) : (
           <div className="space-y-4">
             <Card title="Proposed action" right={<StatusBadge s={status} />}>
               <p className="font-medium">{String(sel["summary"])}</p>
-              <p className="muted mt-1 text-xs">Tool {String(sel["toolId"])} · requested by {String(sel["requestedBy"])} · expires {fmt(sel["expiresAt"])}</p>
-              {ctx.delivery === "export_only_gmail_not_connected" && <p className="mt-2 text-sm" style={{ color: "var(--warn)" }}>Gmail is not connected. Approving exports the text; the system will NOT send it.</p>}
-              {ctx.flags && ctx.flags.length > 0 && <ul className="mt-2 text-sm" style={{ color: "var(--warn)" }}>{ctx.flags.map((f, i) => <li key={i}>Warning: {f}</li>)}</ul>}
+              <p className="muted mt-1 text-xs">
+                Tool {String(sel["toolId"])} · requested by {String(sel["requestedBy"])} · expires {fmt(sel["expiresAt"])}
+              </p>
+              {ctx.delivery === "export_only_gmail_not_connected" && (
+                <p className="mt-2 text-sm c-warn">Gmail is not connected. Approving exports the text; the system will NOT send it.</p>
+              )}
+              {ctx.flags && ctx.flags.length > 0 && (
+                <ul className="mt-2 text-sm c-warn">
+                  {ctx.flags.map((f, i) => (
+                    <li key={i}>Warning: {f}</li>
+                  ))}
+                </ul>
+              )}
               <dl className="mt-3 space-y-2 text-sm">
-                <div><dt className="muted text-xs">To</dt><dd>{payload?.to}</dd></div>
-                <div><dt className="muted text-xs">Subject</dt><dd>{payload?.subject}</dd></div>
-                <div><dt className="muted text-xs">Body <OriginBadge kind={ctx.draftSource === "llm" ? "ai" : "template"} detail={ctx.draftModel ?? undefined} /></dt><dd><pre className="whitespace-pre-wrap rounded-md border border-[var(--line)] p-3">{payload?.body}</pre></dd></div>
-                <div><dt className="muted text-xs">Payload hash (sha-256)</dt><dd className="break-all font-mono text-xs">{String(sel["payloadHash"])}</dd></div>
+                <div>
+                  <dt className="muted text-xs">To</dt>
+                  <dd>{payload?.to}</dd>
+                </div>
+                <div>
+                  <dt className="muted text-xs">Subject</dt>
+                  <dd>{payload?.subject}</dd>
+                </div>
+                <div>
+                  <dt className="muted text-xs">
+                    Body <OriginBadge kind={ctx.draftSource === "llm" ? "ai" : "template"} detail={ctx.draftModel ?? undefined} />
+                  </dt>
+                  <dd>
+                    <pre className="whitespace-pre-wrap rounded-md border border-[var(--line)] p-3">{payload?.body}</pre>
+                  </dd>
+                </div>
+                <div>
+                  <dt className="muted text-xs">Payload hash (sha-256)</dt>
+                  <dd className="break-all font-mono text-xs">{String(sel["payloadHash"])}</dd>
+                </div>
               </dl>
-              {status === "awaiting_approval" && !canDecide && <p className="mt-4 text-sm muted">Only an owner or admin can decide approvals.</p>}
+              {status === "awaiting_approval" && !canDecide && (
+                <p className="mt-4 text-sm muted">Only an owner or admin can decide approvals.</p>
+              )}
               {status === "awaiting_approval" && canDecide && (
                 <form action={decideApproval} className="mt-4 space-y-2">
                   <input type="hidden" name="id" value={String(sel["id"])} />
-                  <label className="block text-xs" htmlFor="note">Note (optional, recorded as a correction if you reject)</label>
+                  <label className="block text-xs" htmlFor="note">
+                    Note (optional, recorded as a correction if you reject)
+                  </label>
                   <input id="note" name="note" className="field" />
-                  {double && <><label className="block text-xs" htmlFor="confirmHash">Second confirmation: paste the payload hash</label><input id="confirmHash" name="confirmHash" className="field font-mono" /></>}
+                  {double && (
+                    <>
+                      <label className="block text-xs" htmlFor="confirmHash">
+                        Second confirmation: paste the payload hash
+                      </label>
+                      <input id="confirmHash" name="confirmHash" className="field font-mono" />
+                    </>
+                  )}
                   <div className="flex gap-2">
-                    <button name="decision" value="approve" className="btn btn-primary" type="submit">Approve{ctx.delivery === "export_only_gmail_not_connected" ? " and export" : ""}</button>
-                    <button name="decision" value="reject" className="btn btn-danger" type="submit">Reject</button>
+                    <button name="decision" value="approve" className="btn btn-primary" type="submit">
+                      Approve{ctx.delivery === "export_only_gmail_not_connected" ? " and export" : ""}
+                    </button>
+                    <button name="decision" value="reject" className="btn btn-danger" type="submit">
+                      Reject
+                    </button>
                   </div>
                 </form>
               )}
               {status === "unknown_outcome" && (
                 <div className="mt-4 space-y-2 rounded-md border border-[var(--bad)] p-3 text-sm" role="alert">
-                  <p><b>Outcome unknown.</b> The send was attempted but the result was not confirmed (timeout or lost worker). It will <b>not</b> be retried automatically, because it may already have gone out. Check the real system (for example the Sent folder), then record what you found.</p>
+                  <p>
+                    <b>Outcome unknown.</b> The send was attempted but the result was not confirmed (timeout or lost worker). It will{" "}
+                    <b>not</b> be retried automatically, because it may already have gone out. Check the real system (for example the Sent
+                    folder), then record what you found.
+                  </p>
                   {canDecide ? (
                     <form action={reconcileApproval} className="space-y-2">
                       <input type="hidden" name="id" value={String(sel["id"])} />
-                      <label className="block text-xs" htmlFor="rnote">How did you check? (required)</label>
+                      <label className="block text-xs" htmlFor="rnote">
+                        How did you check? (required)
+                      </label>
                       <input id="rnote" name="note" required className="field" />
                       <div className="flex gap-2">
-                        <button name="outcome" value="delivered" className="btn btn-primary" type="submit">It WAS delivered</button>
-                        <button name="outcome" value="not_delivered" className="btn btn-danger" type="submit">It was NOT delivered</button>
+                        <button name="outcome" value="delivered" className="btn btn-primary" type="submit">
+                          It WAS delivered
+                        </button>
+                        <button name="outcome" value="not_delivered" className="btn btn-danger" type="submit">
+                          It was NOT delivered
+                        </button>
                       </div>
                     </form>
-                  ) : <p className="muted">Only an owner or admin can reconcile.</p>}
+                  ) : (
+                    <p className="muted">Only an owner or admin can reconcile.</p>
+                  )}
                 </div>
               )}
               {status === "failed" && canDecide && (
-                <form action={replayApproval} className="mt-4"><input type="hidden" name="id" value={String(sel["id"])} /><button className="btn" type="submit">Replay (operator)</button></form>
+                <form action={replayApproval} className="mt-4">
+                  <input type="hidden" name="id" value={String(sel["id"])} />
+                  <button className="btn" type="submit">
+                    Replay (operator)
+                  </button>
+                </form>
               )}
               {status === "succeeded" && result?.delivered === false && (
-                <p className="mt-4 text-sm">Exported, not delivered. <a className="btn" href={`/api/approvals/${sel["id"]}/eml`}>Download .eml</a> and send it yourself; a follow-up task was created.</p>
+                <p className="mt-4 text-sm">
+                  Exported, not delivered.{" "}
+                  <a className="btn" href={`/api/approvals/${sel["id"]}/eml`}>
+                    Download .eml
+                  </a>{" "}
+                  and send it yourself; a follow-up task was created.
+                </p>
               )}
             </Card>
-            {ctx.provenance && <Card title="Source context"><Provenance items={ctx.provenance} />{ctx.facts && <ul className="mt-2 space-y-1 text-xs">{ctx.facts.map((f, i) => <li key={i}>{f.label}: <span className="font-mono">{f.value}</span> <OriginBadge kind={f.status} detail={f.source} /></li>)}</ul>}{ctx.intent && <p className="muted mt-2 text-xs">Intent: {ctx.intent}</p>}</Card>}
+            {ctx.provenance && (
+              <Card title="Source context">
+                <Provenance items={ctx.provenance} />
+                {ctx.facts && (
+                  <ul className="mt-2 space-y-1 text-xs">
+                    {ctx.facts.map((f, i) => (
+                      <li key={i}>
+                        {f.label}: <span className="font-mono">{f.value}</span> <OriginBadge kind={f.status} detail={f.source} />
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {ctx.intent && <p className="muted mt-2 text-xs">Intent: {ctx.intent}</p>}
+              </Card>
+            )}
             <Card title="Execution receipts">
-              {receipts.length === 0 ? <Empty>Not executed.</Empty> : (
-                <ul className="space-y-1 text-sm">{receipts.map((r) => <li key={String(r["id"])}>attempt {String(r["attempt"])} · {r["ok"] ? "ok" : "failed"} · {String(r["executedBy"])} · {fmt(r["executedAt"])}{r["error"] ? ` · ${String(r["error"])}` : ""}</li>)}</ul>
+              {receipts.length === 0 ? (
+                <Empty>Not executed.</Empty>
+              ) : (
+                <ul className="space-y-1 text-sm">
+                  {receipts.map((r) => (
+                    <li key={String(r["id"])}>
+                      attempt {String(r["attempt"])} · {r["ok"] ? "ok" : "failed"} · {String(r["executedBy"])} · {fmt(r["executedAt"])}
+                      {r["error"] ? ` · ${String(r["error"])}` : ""}
+                    </li>
+                  ))}
+                </ul>
               )}
             </Card>
             <Card title="Audit trail">
-              <ul className="space-y-1 text-xs">{audit.map((a) => <li key={String(a["id"])}><span className="font-mono">{fmt(a["createdAt"])}</span> {String(a["actor"])} · {String(a["action"])}</li>)}</ul>
+              <ul className="space-y-1 text-xs">
+                {audit.map((a) => (
+                  <li key={String(a["id"])}>
+                    <span className="font-mono">{fmt(a["createdAt"])}</span> {String(a["actor"])} · {String(a["action"])}
+                  </li>
+                ))}
+              </ul>
             </Card>
           </div>
         )}

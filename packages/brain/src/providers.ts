@@ -17,7 +17,12 @@ export interface ModelEnv {
 function pricing(env: ModelEnv): Pricing | undefined {
   const i = Number(env.AAF_AI_PRICE_IN_PER_M);
   const o = Number(env.AAF_AI_PRICE_OUT_PER_M);
-  return Number.isFinite(i) && Number.isFinite(o) && env.AAF_AI_PRICE_IN_PER_M !== undefined && env.AAF_AI_PRICE_OUT_PER_M !== undefined && i >= 0 && o >= 0
+  return Number.isFinite(i) &&
+    Number.isFinite(o) &&
+    env.AAF_AI_PRICE_IN_PER_M !== undefined &&
+    env.AAF_AI_PRICE_OUT_PER_M !== undefined &&
+    i >= 0 &&
+    o >= 0
     ? { eurPerMIn: i, eurPerMOut: o, estimated: false }
     : undefined; // undefined => pessimistic estimated default, so the budget still binds
 }
@@ -29,7 +34,8 @@ export function providersFromEnv(env: ModelEnv): AiSdkProvider[] {
   if (env.AI_GATEWAY_API_KEY) {
     const c = env.AAF_AI_MODEL_CLASSIFY;
     const d = env.AAF_AI_MODEL_DRAFT;
-    const mk = (id: string, model: string, tasks?: AiTask[]) => new AiSdkProvider({ id, location: "cloud", model, modelLabel: model, tasks, pricing: price });
+    const mk = (id: string, model: string, tasks?: AiTask[]) =>
+      new AiSdkProvider({ id, location: "cloud", model, modelLabel: model, tasks, pricing: price });
     if (c && d && c !== d) {
       out.push(mk("gateway-classify", c, ["classify"]), mk("gateway-draft", d, ["draft"]));
     } else if (c || d) {

@@ -68,13 +68,17 @@ export interface ConfigProblem {
 /** Returns problems by variable NAME only. Values are never echoed. */
 export function productionProblems(env: Env): ConfigProblem[] {
   const p: ConfigProblem[] = [];
-  if (env.AAF_RUNTIME_MODE === "e2e") p.push({ key: "AAF_RUNTIME_MODE", problem: "test-only mode is active: embedded database and development auth are enabled" });
-  const need = (k: keyof Env, why: string) => { if (!env[k]) p.push({ key: k, problem: `required in production: ${why}` }); };
+  if (env.AAF_RUNTIME_MODE === "e2e")
+    p.push({ key: "AAF_RUNTIME_MODE", problem: "test-only mode is active: embedded database and development auth are enabled" });
+  const need = (k: keyof Env, why: string) => {
+    if (!env[k]) p.push({ key: k, problem: `required in production: ${why}` });
+  };
   need("DATABASE_URL", "Supabase Postgres pooler URL for the aaf_app role");
   need("NEXT_PUBLIC_SUPABASE_URL", "Supabase Auth");
   need("NEXT_PUBLIC_SUPABASE_ANON_KEY", "Supabase Auth");
   need("AAF_APP_ORIGIN", "origin allow-list for CSRF checks");
-  if (env.AAF_AUTH_PROVIDER === "local") p.push({ key: "AAF_AUTH_PROVIDER", problem: "the local development auth provider is forbidden in production" });
+  if (env.AAF_AUTH_PROVIDER === "local")
+    p.push({ key: "AAF_AUTH_PROVIDER", problem: "the local development auth provider is forbidden in production" });
   if (env.AAF_JOB_DRIVER === "trigger") need("TRIGGER_SECRET_KEY", "Trigger.dev job driver");
   return p;
 }
@@ -92,7 +96,10 @@ export function getEnv(raw: NodeJS.ProcessEnv = process.env): Env {
 }
 
 export function authProviderName(env: Env): "supabase" | "local" | "none" {
-  if (env.AAF_AUTH_PROVIDER === "supabase" || (!env.AAF_AUTH_PROVIDER && env.NEXT_PUBLIC_SUPABASE_URL && env.NEXT_PUBLIC_SUPABASE_ANON_KEY)) {
+  if (
+    env.AAF_AUTH_PROVIDER === "supabase" ||
+    (!env.AAF_AUTH_PROVIDER && env.NEXT_PUBLIC_SUPABASE_URL && env.NEXT_PUBLIC_SUPABASE_ANON_KEY)
+  ) {
     return env.NEXT_PUBLIC_SUPABASE_URL && env.NEXT_PUBLIC_SUPABASE_ANON_KEY ? "supabase" : "none";
   }
   if (isProd(env)) return "none";

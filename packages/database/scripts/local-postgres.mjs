@@ -25,7 +25,13 @@ const ADMIN_PW = "local-admin-only";
 import { realpathSync } from "node:fs";
 // pnpm layout: <store>/embedded-postgres@x/node_modules/{embedded-postgres,@embedded-postgres/<platform>}
 const epReal = realpathSync(join(here, "..", "node_modules", "embedded-postgres"));
-const bin = join(dirname(epReal), "@embedded-postgres", `${process.platform === "win32" ? "windows" : process.platform}-${process.arch}`, "native", "bin");
+const bin = join(
+  dirname(epReal),
+  "@embedded-postgres",
+  `${process.platform === "win32" ? "windows" : process.platform}-${process.arch}`,
+  "native",
+  "bin",
+);
 const exe = (n) => join(bin, process.platform === "win32" ? `${n}.exe` : n);
 const run = (n, args, opts = {}) => spawnSync(exe(n), args, { encoding: "utf8", ...opts });
 
@@ -43,11 +49,32 @@ if (cmd === "start") {
     writeFileSync(pw, ADMIN_PW);
     const r = run("initdb", ["-D", dataDir, "-U", "postgres", "--auth=scram-sha-256", "--pwfile", pw, "-E", "UTF8", "--locale=C"]);
     rmSync(pw, { force: true });
-    if (r.status !== 0) { console.error(r.stderr || r.stdout); process.exit(1); }
+    if (r.status !== 0) {
+      console.error(r.stderr || r.stdout);
+      process.exit(1);
+    }
   }
   if (!running()) {
-    const r = run("pg_ctl", ["-D", dataDir, "-l", join(dataDir, "..", "localpg.log"), "-o", `-p ${port} -c listen_addresses=127.0.0.1 -c max_connections=100`, "-w", "-t", "60", "start"], { stdio: "ignore" }); // stdio must not be piped: the server inherits it and would keep spawnSync waiting
-    if (r.status !== 0) { console.error("pg_ctl start failed; see .data/localpg.log"); process.exit(1); }
+    const r = run(
+      "pg_ctl",
+      [
+        "-D",
+        dataDir,
+        "-l",
+        join(dataDir, "..", "localpg.log"),
+        "-o",
+        `-p ${port} -c listen_addresses=127.0.0.1 -c max_connections=100`,
+        "-w",
+        "-t",
+        "60",
+        "start",
+      ],
+      { stdio: "ignore" },
+    ); // stdio must not be piped: the server inherits it and would keep spawnSync waiting
+    if (r.status !== 0) {
+      console.error("pg_ctl start failed; see .data/localpg.log");
+      process.exit(1);
+    }
   }
   console.log(`running on 127.0.0.1:${port}\nLOCALPG_ADMIN_URL=${urls.admin}`);
 } else if (cmd === "stop") {

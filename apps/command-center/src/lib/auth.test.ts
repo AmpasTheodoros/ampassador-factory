@@ -18,7 +18,15 @@ describe("local (development) auth provider: real sessions in the database", () 
   let h: TestHarness;
   let cookie: string | undefined;
   let clock: number;
-  const jar = { get: () => cookie, set: (v: string) => { cookie = v; }, clear: () => { cookie = undefined; } };
+  const jar = {
+    get: () => cookie,
+    set: (v: string) => {
+      cookie = v;
+    },
+    clear: () => {
+      cookie = undefined;
+    },
+  };
   const make = () => createLocalAuth(h.database, jar, () => clock);
   beforeEach(async () => {
     h = await openTestHarness();
@@ -78,7 +86,14 @@ describe("local (development) auth provider: real sessions in the database", () 
 describe("Supabase auth provider (fake client, not a live project)", () => {
   const client = (over: Record<string, unknown>) => ({ auth: { ...over } }) as never;
   it("returns id and email only; user_metadata and app_metadata claiming a role are ignored", async () => {
-    const p = createSupabaseAuth(() => client({ getUser: async () => ({ data: { user: { id: "u1", email: "a@b.co", user_metadata: { role: "owner", workspace: "w9" }, app_metadata: { role: "admin" } } }, error: null }) }));
+    const p = createSupabaseAuth(() =>
+      client({
+        getUser: async () => ({
+          data: { user: { id: "u1", email: "a@b.co", user_metadata: { role: "owner", workspace: "w9" }, app_metadata: { role: "admin" } } },
+          error: null,
+        }),
+      }),
+    );
     expect(await p.getUser()).toEqual({ id: "u1", email: "a@b.co" });
   });
   it("an Auth-server rejection (expired or revoked JWT) means no user", async () => {
@@ -87,11 +102,21 @@ describe("Supabase auth provider (fake client, not a live project)", () => {
   });
   it("sign-in maps failures to invalid/error without leaking detail; sign-out is global", async () => {
     let scope: unknown;
-    const bad = createSupabaseAuth(() => client({ signInWithPassword: async () => ({ data: {}, error: { status: 400, message: "Invalid login credentials" } }) }));
+    const bad = createSupabaseAuth(() =>
+      client({ signInWithPassword: async () => ({ data: {}, error: { status: 400, message: "Invalid login credentials" } }) }),
+    );
     expect(await bad.signIn("a@b.co", "x")).toEqual({ ok: false, reason: "invalid" });
     const down = createSupabaseAuth(() => client({ signInWithPassword: async () => ({ data: {}, error: { status: 503, message: "x" } }) }));
     expect(await down.signIn("a@b.co", "x")).toEqual({ ok: false, reason: "error" });
-    const ok = createSupabaseAuth(() => client({ signInWithPassword: async () => ({ data: { session: { access_token: "t" } }, error: null }), signOut: async (o: unknown) => { scope = o; return {}; } }));
+    const ok = createSupabaseAuth(() =>
+      client({
+        signInWithPassword: async () => ({ data: { session: { access_token: "t" } }, error: null }),
+        signOut: async (o: unknown) => {
+          scope = o;
+          return {};
+        },
+      }),
+    );
     expect(await ok.signIn("a@b.co", "x")).toEqual({ ok: true });
     await ok.signOut();
     expect(scope).toEqual({ scope: "global" });

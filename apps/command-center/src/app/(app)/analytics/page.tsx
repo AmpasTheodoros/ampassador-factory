@@ -15,7 +15,11 @@ export default async function Analytics() {
   const by = (s: string) => approvals.filter((a) => a["status"] === s).length;
   const denied = calls.filter((c) => c["outcome"] === "denied").length;
   const stat = (label: string, v: string | number, note?: string) => (
-    <div className="card p-3"><div className="muted text-xs">{label}</div><div className="text-2xl font-semibold">{v}</div>{note && <div className="muted text-xs">{note}</div>}</div>
+    <div className="card p-3">
+      <div className="muted text-xs">{label}</div>
+      <div className="text-2xl font-semibold">{v}</div>
+      {note && <div className="muted text-xs">{note}</div>}
+    </div>
   );
   return (
     <>
@@ -28,7 +32,9 @@ export default async function Analytics() {
       </div>
       <div className="mt-4 space-y-4">
         <Card title="AI spend this month">
-          <p className="text-sm">{spend.toFixed(2)} of {budget.toFixed(2)} EUR budget {spend >= budget ? "(model calls are stopped)" : ""}</p>
+          <p className="text-sm">
+            {spend.toFixed(2)} of {budget.toFixed(2)} EUR budget {spend >= budget ? "(model calls are stopped)" : ""}
+          </p>
           <progress className="mt-2 w-full" value={Math.min(spend, budget)} max={budget || 1} aria-label="Budget used" />
           {!llm && <p className="muted mt-2 text-xs">No LLM provider configured: drafts are deterministic templates and cost nothing.</p>}
         </Card>
@@ -36,7 +42,10 @@ export default async function Analytics() {
           <p className="text-sm">{denied} tool call(s) were denied (missing connector, scope, invalid input or rate limit).</p>
         </Card>
         <Card title="Business outcomes">
-          <Empty>Meetings, proposals, paid pilots and revenue are not tracked yet. They arrive with the sales engine (R2); until then this page does not show numbers it cannot back.</Empty>
+          <Empty>
+            Meetings, proposals, paid pilots and revenue are not tracked yet. They arrive with the sales engine (R2); until then this page
+            does not show numbers it cannot back.
+          </Empty>
         </Card>
       </div>
     </>

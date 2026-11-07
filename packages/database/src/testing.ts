@@ -17,6 +17,11 @@ export interface TestHarness {
 
 /** In-process embedded Postgres, request path = Database.run (SET LOCAL ROLE per transaction). */
 export async function openTestHarness(): Promise<TestHarness> {
+  if (process.env.AAF_TEST_BACKEND === "staging") {
+    const { openStagingHarness } = await import("./live");
+    const h = await openStagingHarness();
+    return { admin: h.admin, database: h.database, ledgerDatabase: h.ledgerDatabase, backend: "realpg", close: h.close };
+  }
   if (process.env.AAF_TEST_BACKEND === "realpg") {
     const { openRealPgHarness } = await import("./live");
     const h = await openRealPgHarness();

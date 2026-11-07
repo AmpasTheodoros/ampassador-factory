@@ -9,7 +9,10 @@
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsc -p .",
     "e2e": "playwright test",
-    "e2e:realpg": "tsx e2e/run-realpg.mts"
+    "e2e:realpg": "tsx e2e/run-realpg.mts",
+    "check:env": "tsx scripts/check-env.mts",
+    "verify:deployment": "node scripts/verify-deployment.mjs",
+    "e2e:staging": "playwright test --config playwright.staging.config.ts"
   },
   "dependencies": {
     "@aaf/brain": "workspace:*",

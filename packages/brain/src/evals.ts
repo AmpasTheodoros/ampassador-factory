@@ -1,7 +1,12 @@
 import type { Intent } from "./classify";
 
 /** Synthetic evaluation set for signal triage. Every correction from the UI should be appended here as a new case. */
-export interface TriageCase { id: string; text: string; expected: Intent; note?: string }
+export interface TriageCase {
+  id: string;
+  text: string;
+  expected: Intent;
+  note?: string;
+}
 
 export const TRIAGE_EVAL: TriageCase[] = [
   { id: "t01", text: "Would you be free for a call on Thursday?", expected: "meeting_request" },

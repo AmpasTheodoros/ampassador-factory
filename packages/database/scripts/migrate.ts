@@ -25,9 +25,15 @@ try {
     rows: async (sql: string, p?: unknown[]) => (await client.query(sql, p as unknown[])).rows as Record<string, unknown>[],
   };
   if (check) {
-    const all = readdirSync(findMigrationsDir()).filter((f) => f.endsWith(".sql")).sort();
+    const all = readdirSync(findMigrationsDir())
+      .filter((f) => f.endsWith(".sql"))
+      .sort();
     let applied: string[] = [];
-    try { applied = (await admin.rows("select name from _migrations")).map((r) => String(r["name"])); } catch { /* no table yet */ }
+    try {
+      applied = (await admin.rows("select name from _migrations")).map((r) => String(r["name"]));
+    } catch {
+      /* no table yet */
+    }
     const pending = all.filter((f) => !applied.includes(f));
     console.log(pending.length ? `pending: ${pending.join(", ")}` : "up to date");
     process.exit(pending.length ? 1 : 0);

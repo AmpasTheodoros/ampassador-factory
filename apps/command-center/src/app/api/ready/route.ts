@@ -26,7 +26,10 @@ export async function GET() {
     checks.database = { ok: h.ok, kind: database.kind, latencyMs: h.latencyMs };
     if (!h.ok) ok = false;
     if (h.ok) {
-      const m = await database.run({ kind: "anon" }, (q) => q.query<{ n: number }>(`select count(*)::int as n from rate_limits where false`)).then(() => true).catch(() => false);
+      const m = await database
+        .run({ kind: "anon" }, (q) => q.query<{ n: number }>(`select count(*)::int as n from rate_limits where false`))
+        .then(() => true)
+        .catch(() => false);
       checks.schema = { ok: m };
       if (!m) ok = false;
     }

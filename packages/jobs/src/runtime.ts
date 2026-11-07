@@ -1,7 +1,16 @@
 import type { Database, Store } from "@aaf/database";
 import { Store as StoreImpl } from "@aaf/database";
 import { ToolGateway, BUILTIN_TOOLS, type Services, type Autonomous } from "@aaf/tools";
-import { ModelRouter, providersFromEnv, AutonomousBudgetLedger, TxBudgetLedger, type BrainDeps, type ModelEnv, type CallEvent, type BudgetLedger } from "@aaf/brain";
+import {
+  ModelRouter,
+  providersFromEnv,
+  AutonomousBudgetLedger,
+  TxBudgetLedger,
+  type BrainDeps,
+  type ModelEnv,
+  type CallEvent,
+  type BudgetLedger,
+} from "@aaf/brain";
 import { NetworkRadarAdapter, missingConfig, type Health } from "@aaf/integrations";
 import type { Job } from "./queue";
 import type { BrainServices } from "./handlers";
@@ -39,7 +48,10 @@ export function gatewayServices(nr: NetworkRadarAdapter | undefined): Services {
  * it survives a rollback of the request). On the single-connection embedded dev database that is impossible, so the
  * ledger runs inside the caller's transaction (still atomic, but lost if that transaction rolls back: dev only).
  */
-export interface Dbs { database: Database; /** separate small pool for autonomous ledger transactions (never shared with request transactions: sharing deadlocks the pool) */ ledger?: Database }
+export interface Dbs {
+  database: Database;
+  /** separate small pool for autonomous ledger transactions (never shared with request transactions: sharing deadlocks the pool) */ ledger?: Database;
+}
 export function ledgerFor(dbs: Dbs | undefined, store: Store): BudgetLedger | undefined {
   if (!dbs) return undefined;
   if (dbs.ledger) return new AutonomousBudgetLedger(dbs.ledger);
@@ -54,7 +66,13 @@ export function autonomousFor(dbs: Dbs | undefined): Autonomous | undefined {
   return (ws, fn) => d.run({ kind: "service", workspaceId: ws, reason: "approval-execution" }, (q) => fn(new StoreImpl(q)));
 }
 
-export function buildBrainDeps(store: Store, env: RuntimeEnv, nr: NetworkRadarAdapter | undefined, onCall?: (e: CallEvent) => void, dbs?: Dbs) {
+export function buildBrainDeps(
+  store: Store,
+  env: RuntimeEnv,
+  nr: NetworkRadarAdapter | undefined,
+  onCall?: (e: CallEvent) => void,
+  dbs?: Dbs,
+) {
   const ledger = ledgerFor(dbs, store);
   const router = new ModelRouter(store, providersFromEnv(env), ledger ? { ledger, onCall } : { deferCosts: true, onCall });
   const deps: BrainDeps = {
@@ -67,7 +85,11 @@ export function buildBrainDeps(store: Store, env: RuntimeEnv, nr: NetworkRadarAd
 }
 
 /** Service-role builder for jobs: after the job transaction ends, deferred model spend is flushed in its own transaction. */
-export function makeBuildServices(database: Database, env: RuntimeEnv, opts: { nr?: NetworkRadarAdapter; onCall?: (e: CallEvent) => void; ledger?: Database } = {}) {
+export function makeBuildServices(
+  database: Database,
+  env: RuntimeEnv,
+  opts: { nr?: NetworkRadarAdapter; onCall?: (e: CallEvent) => void; ledger?: Database } = {},
+) {
   const nr = opts.nr ?? networkRadarFromEnv(env);
   return (store: Store, job: Job): { services: BrainServices; after: () => Promise<void> } => {
     const { deps, router } = buildBrainDeps(store, env, nr, opts.onCall, { database, ledger: opts.ledger });
@@ -75,7 +97,9 @@ export function makeBuildServices(database: Database, env: RuntimeEnv, opts: { n
       services: { deps },
       after: async () => {
         if (router.pendingCosts().length === 0) return;
-        await database.run({ kind: "service", workspaceId: job.workspaceId, reason: "cost-flush" }, (q) => router.flushCosts(new StoreImpl(q)).then(() => undefined));
+        await database.run({ kind: "service", workspaceId: job.workspaceId, reason: "cost-flush" }, (q) =>
+          router.flushCosts(new StoreImpl(q)).then(() => undefined),
+        );
       },
     };
   };
@@ -86,7 +110,12 @@ export function makeBuildServices(database: Database, env: RuntimeEnv, opts: { n
  * read-only contract; otherwise "not_connected" with the exact blocker. Cached to avoid a network call per request.
  */
 const cache = new Map<string, { at: number; health: Health }>();
-export async function refreshNetworkRadarConnection(store: Store, ws: string, env: RuntimeEnv, opts: { ttlMs?: number; nr?: NetworkRadarAdapter } = {}): Promise<Health> {
+export async function refreshNetworkRadarConnection(
+  store: Store,
+  ws: string,
+  env: RuntimeEnv,
+  opts: { ttlMs?: number; nr?: NetworkRadarAdapter } = {},
+): Promise<Health> {
   const missing = missingConfig(env);
   let h: Health;
   if (missing.length) {
@@ -107,9 +136,22 @@ export async function refreshNetworkRadarConnection(store: Store, ws: string, en
     h = nr ? await nr.health() : { status: "blocked", code: "not_configured", reason };
     cache.set(key, { at: Date.now(), health: h });
   }
-  if (h.status === "connected") await store.upsertConnection(ws, "networkradar", "connected", "Read-only: search_people, get_person, get_relationship_brief, list_actions, get_network_summary", ["networkradar.read"]);
+  if (h.status === "connected")
+    await store.upsertConnection(
+      ws,
+      "networkradar",
+      "connected",
+      "Read-only: search_people, get_person, get_relationship_brief, list_actions, get_network_summary",
+      ["networkradar.read"],
+    );
   else if (h.status === "blocked") await store.upsertConnection(ws, "networkradar", "not_connected", `Blocked (${h.code}): ${h.reason}`);
-  else await store.upsertConnection(ws, "networkradar", "not_connected", `Not configured: set ${h.missing.join(", ")}. See docs/networkradar-connectivity.md`);
+  else
+    await store.upsertConnection(
+      ws,
+      "networkradar",
+      "not_connected",
+      `Not configured: set ${h.missing.join(", ")}. See docs/networkradar-connectivity.md`,
+    );
   return h;
 }
 export function _resetNetworkRadarCache() {

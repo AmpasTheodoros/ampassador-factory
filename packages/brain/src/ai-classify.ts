@@ -2,7 +2,18 @@ import { z } from "zod";
 import { INTENT_RULES, UNKNOWN_RULE, classify, priorityScore, type Classification, type Intent, type IntentRule } from "./classify";
 import type { ModelRouter } from "./llm";
 
-const INTENTS = ["meeting_request", "pricing_question", "interested", "not_now", "decline", "out_of_office", "unsubscribe", "introduction", "question", "unknown"] as const;
+const INTENTS = [
+  "meeting_request",
+  "pricing_question",
+  "interested",
+  "not_now",
+  "decline",
+  "out_of_office",
+  "unsubscribe",
+  "introduction",
+  "question",
+  "unknown",
+] as const;
 
 export const AiClassification = z.object({
   intent: z.enum(INTENTS),
@@ -40,16 +51,36 @@ const NO_REPLY: Intent[] = ["unsubscribe", "decline", "out_of_office"];
  * Rules always run. If a model is available it classifies too; the two are reconciled by fixed policy.
  * The model's output is data (an intent label): it can never choose a recipient, a tool or an approval state.
  */
-export async function classifyWithAi(router: ModelRouter | undefined, ws: string, subject: string, body: string, rules: IntentRule[] = INTENT_RULES): Promise<FinalClassification> {
+export async function classifyWithAi(
+  router: ModelRouter | undefined,
+  ws: string,
+  subject: string,
+  body: string,
+  rules: IntentRule[] = INTENT_RULES,
+): Promise<FinalClassification> {
   const base: Classification = classify(`${subject}\n${body}`, rules);
-  const out: FinalClassification = { rule: base.rule, by: "rules", confidence: base.rule.confidence, rulesIntent: base.rule.intent, injectionSuspected: base.injectionSuspected, disagreement: false, rulesMatched: base.matched };
+  const out: FinalClassification = {
+    rule: base.rule,
+    by: "rules",
+    confidence: base.rule.confidence,
+    rulesIntent: base.rule.intent,
+    injectionSuspected: base.injectionSuspected,
+    disagreement: false,
+    rulesMatched: base.matched,
+  };
   if (!router?.available()) return out;
   try {
-    const r = await router.structured(ws, "classify", "hybrid", {
-      system: SYSTEM,
-      user: `<untrusted_message>\nSubject: ${subject}\n\n${body}\n</untrusted_message>`,
-      maxOutputTokens: 200,
-    }, AiClassification);
+    const r = await router.structured(
+      ws,
+      "classify",
+      "hybrid",
+      {
+        system: SYSTEM,
+        user: `<untrusted_message>\nSubject: ${subject}\n\n${body}\n</untrusted_message>`,
+        maxOutputTokens: 200,
+      },
+      AiClassification,
+    );
     const ai = r.value;
     out.model = r.modelLabel;
     out.location = r.location;
@@ -63,7 +94,7 @@ export async function classifyWithAi(router: ModelRouter | undefined, ws: string
       out.disagreement = true;
       const conservative = NO_REPLY.includes(ai.intent) && ai.intent === "unsubscribe";
       const weakRules = base.rule.intent === "unknown" || base.rule.intent === "question";
-      if (conservative || (ai.confidence >= 0.8) || (weakRules && ai.confidence >= 0.65)) {
+      if (conservative || ai.confidence >= 0.8 || (weakRules && ai.confidence >= 0.65)) {
         out.rule = ruleFor(ai.intent, rules);
         out.by = "ai";
         out.confidence = Math.min(ai.confidence, 0.9);
@@ -79,4 +110,5 @@ export async function classifyWithAi(router: ModelRouter | undefined, ws: string
   return out;
 }
 
-export const scoreFor = (f: FinalClassification) => priorityScore({ impact: f.rule.impact, urgency: f.rule.urgency, confidence: f.confidence, effort: f.rule.effort });
+export const scoreFor = (f: FinalClassification) =>
+  priorityScore({ impact: f.rule.impact, urgency: f.rule.urgency, confidence: f.confidence, effort: f.rule.effort });

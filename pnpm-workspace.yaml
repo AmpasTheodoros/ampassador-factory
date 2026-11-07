@@ -5,3 +5,7 @@ onlyBuiltDependencies:
   - esbuild
   - sharp
   - unrs-resolver
+overrides:
+  "minimatch@>=7.0.0 <11.0.1": ">=11.0.1"
+# Supply chain: do not install a package version published in the last 24 h (most malicious releases are yanked within hours).
+minimumReleaseAge: 1440

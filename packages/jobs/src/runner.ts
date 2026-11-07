@@ -56,17 +56,34 @@ export interface RunSummary {
  * bookkeeping (tx 3). A crash between tx 1 and tx 2 leaves a leased 'running' job that is reclaimed when the lease expires.
  * Handlers must be idempotent with respect to external effects (use the job id / approval id as the idempotency key).
  */
-export async function runWorkspace<S = unknown>(database: Database, ws: string, handlers: Handlers<S>, opts: RunOptions<S>): Promise<RunSummary> {
+export async function runWorkspace<S = unknown>(
+  database: Database,
+  ws: string,
+  handlers: Handlers<S>,
+  opts: RunOptions<S>,
+): Promise<RunSummary> {
   const now = opts.now ?? (() => new Date());
   const lease = opts.leaseMs ?? 60_000;
   const base = opts.backoffBaseMs ?? 2_000;
-  const sum: RunSummary = { ran: 0, succeeded: 0, waiting: 0, retried: 0, dead: 0, cancelled: 0, swept: { cancelled: 0, dead: 0, resumed: 0 }, nextDueAt: null };
-  const svc = <T>(fn: (store: Store) => Promise<T>) => database.run({ kind: "service", workspaceId: ws, reason: `jobs:${opts.workerId}` }, (q) => fn(new Store(q)));
+  const sum: RunSummary = {
+    ran: 0,
+    succeeded: 0,
+    waiting: 0,
+    retried: 0,
+    dead: 0,
+    cancelled: 0,
+    swept: { cancelled: 0, dead: 0, resumed: 0 },
+    nextDueAt: null,
+  };
+  const svc = <T>(fn: (store: Store) => Promise<T>) =>
+    database.run({ kind: "service", workspaceId: ws, reason: `jobs:${opts.workerId}` }, (q) => fn(new Store(q)));
 
   for (let i = 0; i < (opts.maxJobs ?? 25); i++) {
     const claimed = await svc(async (store) => {
       const sw = await Q.sweep(store.db, ws, now());
-      sum.swept.cancelled += sw.cancelled; sum.swept.dead += sw.dead; sum.swept.resumed += sw.resumed;
+      sum.swept.cancelled += sw.cancelled;
+      sum.swept.dead += sw.dead;
+      sum.swept.resumed += sw.resumed;
       return Q.claimNext(store.db, ws, opts.workerId, lease, now());
     });
     if (!claimed) break;
@@ -80,19 +97,28 @@ export async function runWorkspace<S = unknown>(database: Database, ws: string, 
         const built = opts.buildServices?.(store, job);
         after = built?.after;
         const ctx: JobContext<S> = {
-          job, workspaceId: ws, correlationId: job.correlationId, store, resume: job.resumeState ?? undefined,
-          services: (built?.services ?? ({} as S)),
+          job,
+          workspaceId: ws,
+          correlationId: job.correlationId,
+          store,
+          resume: job.resumeState ?? undefined,
+          services: built?.services ?? ({} as S),
           progress: (pct, note) => Q.setProgress(store.db, ws, job.id, pct, note),
-          checkCancelled: async () => { if (await Q.isCancelRequested(store.db, ws, job.id)) throw new JobCancelled(); },
+          checkCancelled: async () => {
+            if (await Q.isCancelRequested(store.db, ws, job.id)) throw new JobCancelled();
+          },
         };
         await ctx.checkCancelled();
         const out = await handler(ctx);
         if (out.kind === "done") await Q.succeed(store.db, ws, job.id, out.output, now());
         else await Q.waitForApproval(store.db, ws, job.id, out.approvalId, now());
-        await store.audit(ws, `job:${job.type}`, `job.${out.kind === "done" ? "succeeded" : "waiting_approval"}`, "job", job.id, { correlationId: job.correlationId });
+        await store.audit(ws, `job:${job.type}`, `job.${out.kind === "done" ? "succeeded" : "waiting_approval"}`, "job", job.id, {
+          correlationId: job.correlationId,
+        });
         return out;
       });
-      if (outcome.kind === "done") sum.succeeded++; else sum.waiting++;
+      if (outcome.kind === "done") sum.succeeded++;
+      else sum.waiting++;
     } catch (e) {
       if (e instanceof JobCancelled) {
         await svc((store) => Q.markCancelled(store.db, ws, job.id, now()));
@@ -102,10 +128,14 @@ export async function runWorkspace<S = unknown>(database: Database, ws: string, 
         const msg = e instanceof Error ? e.message : String(e);
         const r = await svc(async (store) => {
           const res = await Q.failAttempt(store.db, ws, job, msg, permanent, base, now());
-          await store.audit(ws, `job:${job.type}`, res === "dead" ? "job.dead" : "job.retry_scheduled", "job", job.id, { correlationId: job.correlationId, attempt: job.attempts });
+          await store.audit(ws, `job:${job.type}`, res === "dead" ? "job.dead" : "job.retry_scheduled", "job", job.id, {
+            correlationId: job.correlationId,
+            attempt: job.attempts,
+          });
           return res;
         });
-        if (r === "dead") sum.dead++; else sum.retried++;
+        if (r === "dead") sum.dead++;
+        else sum.retried++;
       }
     } finally {
       // runs after the job transaction has ended (committed OR rolled back), so e.g. model spend is never lost
@@ -114,7 +144,9 @@ export async function runWorkspace<S = unknown>(database: Database, ws: string, 
   }
   sum.nextDueAt = await svc(async (store) => {
     const r = await store.db.query<{ t: string | null }>(
-      `select min(t)::text as t from (select run_at as t from jobs where workspace_id=$1 and status='queued' and run_at > $2::timestamptz union all select lease_until from jobs where workspace_id=$1 and status='running') x`, [ws, now().toISOString()]);
+      `select min(t)::text as t from (select run_at as t from jobs where workspace_id=$1 and status='queued' and run_at > $2::timestamptz union all select lease_until from jobs where workspace_id=$1 and status='running') x`,
+      [ws, now().toISOString()],
+    );
     return r[0]?.t ? new Date(r[0].t).toISOString() : null;
   });
   return sum;

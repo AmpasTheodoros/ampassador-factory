@@ -88,7 +88,8 @@ function wrap(e: unknown): DomainError {
   const name = (e as { name?: string })?.name ?? "";
   const msg = (e as Error)?.message ?? String(e);
   if (/timeout|abort/i.test(name + msg)) return new DomainError("llm_timeout", "Model call timed out");
-  if (/NoObjectGenerated|NoOutputGenerated|TypeValidation|JSONParse/i.test(name)) return new DomainError("llm_invalid_output", "Model returned output that did not match the schema");
+  if (/NoObjectGenerated|NoOutputGenerated|TypeValidation|JSONParse/i.test(name))
+    return new DomainError("llm_invalid_output", "Model returned output that did not match the schema");
   return new DomainError("llm_error", msg.slice(0, 200));
 }
 

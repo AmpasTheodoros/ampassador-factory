@@ -7,7 +7,6 @@ import { createSupabaseAuth } from "./supabase";
 import { createLocalAuth, SESSION_TTL_MS } from "./local";
 import type { AuthProvider } from "./types";
 
-
 /** Per-request provider (cookies are request-scoped). Returns null when no provider is usable, which closes the app. */
 export async function getAuth(): Promise<AuthProvider | null> {
   const env = getEnv();
@@ -34,7 +33,14 @@ export async function getAuth(): Promise<AuthProvider | null> {
     const { database } = await getDb();
     return createLocalAuth(database, {
       get: () => jar.get(LOCAL_COOKIE)?.value,
-      set: (v, maxAge) => jar.set(LOCAL_COOKIE, v, { httpOnly: true, sameSite: "lax", secure: isProd(env), path: "/", maxAge: Math.min(maxAge, SESSION_TTL_MS / 1000) }),
+      set: (v, maxAge) =>
+        jar.set(LOCAL_COOKIE, v, {
+          httpOnly: true,
+          sameSite: "lax",
+          secure: isProd(env),
+          path: "/",
+          maxAge: Math.min(maxAge, SESSION_TTL_MS / 1000),
+        }),
       clear: () => jar.delete(LOCAL_COOKIE),
     });
   }

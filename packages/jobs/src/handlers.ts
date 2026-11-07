@@ -46,19 +46,46 @@ export const brainHandlers: Handlers<BrainServices> = {
       await ensureFollowUpTask(deps, ctx.workspaceId, approvalId, { id: ctx.job.id });
       return { kind: "done", output: { approvalId, approvalStatus: "succeeded", executedHere: false } };
     }
-    if (status !== "approved") return { kind: "done", output: { approvalId, approvalStatus: status, executedHere: false, note: "not executable: needs a human (reconcile/replay) or was decided otherwise" } };
+    if (status !== "approved")
+      return {
+        kind: "done",
+        output: {
+          approvalId,
+          approvalStatus: status,
+          executedHere: false,
+          note: "not executable: needs a human (reconcile/replay) or was decided otherwise",
+        },
+      };
     await ctx.progress(20, "executing");
     let res;
     try {
       res = await deps.gateway.execute(ctx.workspaceId, approvalId, { id: ctx.job.id, kind: "system" });
     } catch (e) {
-      if (e instanceof DomainError && ["not_approved", "bad_state", "not_found"].includes(e.code)) throw new DomainError("permanent_not_executable", e.message);
+      if (e instanceof DomainError && ["not_approved", "bad_state", "not_found"].includes(e.code))
+        throw new DomainError("permanent_not_executable", e.message);
       throw e;
     }
     if (res.ok) {
       await ensureFollowUpTask(deps, ctx.workspaceId, approvalId, { id: ctx.job.id });
-      return { kind: "done", output: { approvalId, approvalStatus: "succeeded", executedHere: true, delivered: (res.output as { delivered?: boolean })?.delivered ?? null } };
+      return {
+        kind: "done",
+        output: {
+          approvalId,
+          approvalStatus: "succeeded",
+          executedHere: true,
+          delivered: (res.output as { delivered?: boolean })?.delivered ?? null,
+        },
+      };
     }
-    return { kind: "done", output: { approvalId, approvalStatus: res.unknown ? "unknown_outcome" : "failed", executedHere: true, error: res.error, needsHuman: true } };
+    return {
+      kind: "done",
+      output: {
+        approvalId,
+        approvalStatus: res.unknown ? "unknown_outcome" : "failed",
+        executedHere: true,
+        error: res.error,
+        needsHuman: true,
+      },
+    };
   },
 };

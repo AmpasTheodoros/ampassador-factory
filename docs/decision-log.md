@@ -27,3 +27,20 @@
 | 18 | Own durable queue (Postgres skip-locked + leases) behind a dispatcher; Trigger.dev is a dispatcher, not a rewrite | Tested locally today; Trigger.dev can run the same handlers | When Trigger.dev is configured |
 | 19 | Cost rows are deferred and written after the transaction | A rolled-back job must not erase its spend | - |
 | 20 | NetworkRadar via its existing MCP over Streamable HTTP, with client-side read-only enforcement | It is the only machine contract that exists; the server cannot scope keys | When NetworkRadar gains a read-only key or REST API |
+
+## R1.6
+
+| # | Decision | Why | Revisit when |
+|---|---|---|---|
+| 21 | Real PostgreSQL 17 (local binaries) used for validation, labelled REAL-PG, never "Supabase" | Closest live evidence available without an account; exposes role/inheritance/pool behaviour PGlite hides | When a Supabase staging project exists (`docs/staging-validation.md`) |
+| 22 | `aaf_app` is NOINHERIT; the start-up guard rejects inherit | Found by REAL-PG: inherited privileges blended with the per-request role | - |
+| 23 | Separate ledger pool for write-ahead records | Request tx + autonomous tx on one pool deadlocks | If a single-connection design is adopted |
+| 24 | Budget is reserve/settle/release in SQL, worst case over all SDK attempts; expired reservations are charged | Atomic under concurrency; failed calls still cost | When provider billing import exists (`confirmed_billing`) |
+| 25 | Ambiguous failures of external/financial tools become `unknown_outcome`, never auto-retried | A timed-out send may have happened | When a tool offers idempotency keys |
+| 26 | NetworkRadar read-only credential delivered as a patch + generator only; not applied or deployed | Needs explicit authorisation to modify and deploy another system | On authorisation |
+| 27 | Nonce CSP in `proxy.ts`; no `unsafe-inline` for scripts or styles | Verified in a real browser, zero violations | - |
+| 28 | Dependency policy: `pnpm audit` clean, `minimumReleaseAge: 1440`, minimatch override | Supply-chain hygiene | - |
+
+## Known limitations (R1.6)
+
+See `docs/r1.6-validation-report.md`. In short: nothing is deployed; Supabase Auth/Pooler, a real model, NetworkRadar (patched key), Trigger.dev, Sentry, Langfuse, PostHog and Vercel Preview are unverified live; `confirmed_billing` is never produced.

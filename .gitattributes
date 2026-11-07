@@ -1,0 +1,3 @@
+# patches must be byte-exact (a CRLF conversion would make them unappliable)
+*.patch -text
+*.mjs text eol=lf

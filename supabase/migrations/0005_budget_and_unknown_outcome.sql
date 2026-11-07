@@ -93,3 +93,10 @@ alter table approvals add constraint approvals_status_check
 
 -- When execution started: lets a sweep find executions whose worker died mid-flight.
 alter table approvals add column executing_at timestamptz;
+
+-- Non-incrementing check, so a limiter can count only FAILED attempts (successful sign-ins must not lock a legitimate user out).
+create or replace function app_rate_peek(p_key text, p_max int, p_window_s int) returns boolean
+language sql stable security definer set search_path = public as $$
+  select coalesce((select hits from rate_limits where key = p_key and window_start = to_timestamp(floor(extract(epoch from now()) / p_window_s) * p_window_s)), 0) < p_max
+$$;
+grant execute on function app_rate_peek(text, int, int) to anon, authenticated, aaf_service;

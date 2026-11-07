@@ -11,46 +11,86 @@ import { NetworkRadarAdapter, NetworkRadarError, READ_ONLY_TOOLS, missingConfig 
  * The mock reproduces what the NetworkRadar source documents: stateless Streamable HTTP, Bearer auth,
  * read tools annotated readOnlyHint, write tools present on the same server, results as JSON text.
  */
-const KEY = "nrro_" + "t".repeat(43);              // a read-only key: the (patched) server limits it to the five read tools
+const KEY = "nrro_" + "t".repeat(43); // a read-only key: the (patched) server limits it to the five read tools
 const FULL_KEY = "full-access-key-not-a-real-credential"; // the legacy full-access key: the server exposes EVERYTHING to it
-const LEAKY_KEY = "nrro_" + "L".repeat(43);          // looks read-only but the server (misconfigured) gives it the full surface
+const LEAKY_KEY = "nrro_" + "L".repeat(43); // looks read-only but the server (misconfigured) gives it the full surface
 const calls: string[] = [];
 const ok = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
 const fail = (m: string) => ({ isError: true, content: [{ type: "text" as const, text: m }] });
 
 const PEOPLE = [
-  { id: "ckperson1", name: "Maria Papadopoulou", title: "COO", organization: "Ikos", tier: "A", relationshipStatus: "warm", overallScore: 80, lastContact: null, lastConversation: null, email: "maria@ikos.example" },
-  { id: "ckperson2", name: "Maria Georgiou", title: "Buyer", organization: "Sani", tier: "B", relationshipStatus: "cold", overallScore: 40, lastContact: null, lastConversation: null, email: "m.georgiou@sani.example" },
+  {
+    id: "ckperson1",
+    name: "Maria Papadopoulou",
+    title: "COO",
+    organization: "Ikos",
+    tier: "A",
+    relationshipStatus: "warm",
+    overallScore: 80,
+    lastContact: null,
+    lastConversation: null,
+    email: "maria@ikos.example",
+  },
+  {
+    id: "ckperson2",
+    name: "Maria Georgiou",
+    title: "Buyer",
+    organization: "Sani",
+    tier: "B",
+    relationshipStatus: "cold",
+    overallScore: 40,
+    lastContact: null,
+    lastConversation: null,
+    email: "m.georgiou@sani.example",
+  },
 ];
 
 function buildServer(restricted: boolean) {
   const s = new McpServer({ name: "mock-network-radar", version: "0" });
   const ro = { readOnlyHint: true };
-  s.registerTool("search_people", { description: "d", inputSchema: { query: z.string().optional(), limit: z.number().optional() }, annotations: ro }, async ({ query }) => {
-    calls.push("search_people");
-    return ok(PEOPLE.filter((p) => !query || p.name.toLowerCase().includes(query.toLowerCase())).map(({ email: _e, ...rest }) => rest));
-  });
+  s.registerTool(
+    "search_people",
+    { description: "d", inputSchema: { query: z.string().optional(), limit: z.number().optional() }, annotations: ro },
+    async ({ query }) => {
+      calls.push("search_people");
+      return ok(PEOPLE.filter((p) => !query || p.name.toLowerCase().includes(query.toLowerCase())).map(({ email: _e, ...rest }) => rest));
+    },
+  );
   s.registerTool("get_person", { description: "d", inputSchema: { personId: z.string() }, annotations: ro }, async ({ personId }) => {
     calls.push("get_person");
     const p = PEOPLE.find((x) => x.id === personId);
     return p ? ok(p) : fail(`No person with id ${personId}.`);
   });
-  s.registerTool("get_relationship_brief", { description: "d", inputSchema: { personId: z.string() }, annotations: ro }, async ({ personId }) => {
-    calls.push("get_relationship_brief");
-    return ok({ person: { id: personId }, nextMove: { type: "reply" }, brief: "Warm; owes them a one-pager." });
-  });
-  s.registerTool("list_actions", { description: "d", inputSchema: { status: z.string().optional(), personId: z.string().optional() }, annotations: ro }, async () => {
-    calls.push("list_actions");
-    return ok([{ id: "ckaction1", title: "Send one-pager", status: "todo", priority: "high" }]);
-  });
+  s.registerTool(
+    "get_relationship_brief",
+    { description: "d", inputSchema: { personId: z.string() }, annotations: ro },
+    async ({ personId }) => {
+      calls.push("get_relationship_brief");
+      return ok({ person: { id: personId }, nextMove: { type: "reply" }, brief: "Warm; owes them a one-pager." });
+    },
+  );
+  s.registerTool(
+    "list_actions",
+    { description: "d", inputSchema: { status: z.string().optional(), personId: z.string().optional() }, annotations: ro },
+    async () => {
+      calls.push("list_actions");
+      return ok([{ id: "ckaction1", title: "Send one-pager", status: "todo", priority: "high" }]);
+    },
+  );
   s.registerTool("get_network_summary", { description: "d", inputSchema: {}, annotations: ro }, async () => {
     calls.push("get_network_summary");
     return ok({ people: 2, organizations: 2, events: 1, openActions: 1, relationshipStages: { warm: 1, cold: 1 } });
   });
   if (restricted) return s; // what the patched NetworkRadar serves a read-only key: nothing else exists
   // dangerous tools living on the same server, exactly like the real (unpatched) one
-  s.registerTool("send_email", { description: "SENDS EMAIL", inputSchema: { to: z.string() } }, async () => { calls.push("send_email"); return ok({ sent: true }); });
-  s.registerTool("set_relationship_objective", { description: "writes", inputSchema: { personId: z.string() } }, async () => { calls.push("set_relationship_objective"); return ok({}); });
+  s.registerTool("send_email", { description: "SENDS EMAIL", inputSchema: { to: z.string() } }, async () => {
+    calls.push("send_email");
+    return ok({ sent: true });
+  });
+  s.registerTool("set_relationship_objective", { description: "writes", inputSchema: { personId: z.string() } }, async () => {
+    calls.push("set_relationship_objective");
+    return ok({});
+  });
   return s;
 }
 
@@ -70,14 +110,19 @@ beforeAll(async () => {
     const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : undefined;
     const mcp = buildServer(known[bearer]!);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-    res.on("close", () => { void transport.close(); void mcp.close(); });
+    res.on("close", () => {
+      void transport.close();
+      void mcp.close();
+    });
     await mcp.connect(transport);
     await transport.handleRequest(req, res, body);
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`;
 });
-afterAll(async () => { await new Promise((r) => server.close(r)); });
+afterAll(async () => {
+  await new Promise((r) => server.close(r));
+});
 
 const adapter = (key = KEY, extra: object = {}) => new NetworkRadarAdapter({ url, apiKey: key, timeoutMs: 8000, ...extra });
 
@@ -113,7 +158,9 @@ describe("NetworkRadar adapter: contract against a local mock MCP server (real H
   it("CANNOT call write tools: refused client-side before any request reaches the server", async () => {
     calls.length = 0;
     // strict mode OFF + the full-access key: this isolates the client-side allowlist as the only barrier
-    const a = adapter(FULL_KEY, { requireRestricted: false }) as unknown as { call: (t: string, a: object, s: z.ZodType) => Promise<unknown> };
+    const a = adapter(FULL_KEY, { requireRestricted: false }) as unknown as {
+      call: (t: string, a: object, s: z.ZodType) => Promise<unknown>;
+    };
     for (const t of ["send_email", "set_relationship_objective", "create_person", "approve_chief_reply"])
       await expect(a.call(t, {}, z.unknown())).rejects.toMatchObject({ code: "forbidden_tool" });
     expect(calls).toEqual([]);
@@ -167,7 +214,12 @@ describe("NetworkRadar adapter: contract against a local mock MCP server (real H
   it("the full-access key is REFUSED at construction: the Company OS can only hold a read-only key", () => {
     expect(() => adapter(FULL_KEY)).toThrow(/READ-ONLY key/);
     expect(() => adapter("")).toThrow(/READ-ONLY key/);
-    try { adapter(FULL_KEY); } catch (e) { expect((e as NetworkRadarError).code).toBe("not_configured"); expect((e as Error).message).not.toContain(FULL_KEY); }
+    try {
+      adapter(FULL_KEY);
+    } catch (e) {
+      expect((e as NetworkRadarError).code).toBe("not_configured");
+      expect((e as Error).message).not.toContain(FULL_KEY);
+    }
   });
 
   it("a key that LOOKS read-only but whose server grants write tools is refused on every call, before any tool runs", async () => {
@@ -180,14 +232,12 @@ describe("NetworkRadar adapter: contract against a local mock MCP server (real H
   });
 
   it("against a correctly restricted server the tool list is exactly the five read tools", async () => {
-    const tools = await new Promise<string[]>(async (resolve) => {
-      const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
-      const { StreamableHTTPClientTransport } = await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
-      const c = new Client({ name: "t", version: "0" }, { capabilities: {} });
-      await c.connect(new StreamableHTTPClientTransport(new URL(url), { requestInit: { headers: { Authorization: `Bearer ${KEY}` } } }));
-      resolve((await c.listTools()).tools.map((t) => t.name).sort());
-      await c.close();
-    });
+    const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+    const { StreamableHTTPClientTransport } = await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
+    const c = new Client({ name: "t", version: "0" }, { capabilities: {} });
+    await c.connect(new StreamableHTTPClientTransport(new URL(url), { requestInit: { headers: { Authorization: `Bearer ${KEY}` } } }));
+    const tools = (await c.listTools()).tools.map((t) => t.name).sort();
+    await c.close();
     expect(tools).toEqual([...READ_ONLY_TOOLS].sort());
   });
 

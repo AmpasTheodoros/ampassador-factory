@@ -7,10 +7,7 @@ import type { Db, Queryable, Row } from "./db";
  * server-verified user id, pre-login work runs as `anon`, and internal jobs run as `aaf_service`, which is
  * RLS-scoped to ONE workspace. Elevated access does not exist on this path.
  */
-export type Ctx =
-  | { kind: "user"; userId: string }
-  | { kind: "anon" }
-  | { kind: "service"; workspaceId: string; reason: string };
+export type Ctx = { kind: "user"; userId: string } | { kind: "anon" } | { kind: "service"; workspaceId: string; reason: string };
 
 export interface HealthReport {
   ok: boolean;
@@ -43,10 +40,10 @@ export async function applyContext(raw: RawQuery, ctx: Ctx): Promise<void> {
   if (ctx.kind === "user") {
     if (!UUID.test(ctx.userId)) throw new DomainError("bad_context", "user id must be a UUID");
     await raw(`set local role authenticated`);
-    await raw(`select set_config('request.jwt.claims', $1, true), set_config('request.jwt.claim.sub', $2, true), set_config('request.jwt.claim.role', 'authenticated', true)`, [
-      JSON.stringify({ sub: ctx.userId, role: "authenticated" }),
-      ctx.userId,
-    ]);
+    await raw(
+      `select set_config('request.jwt.claims', $1, true), set_config('request.jwt.claim.sub', $2, true), set_config('request.jwt.claim.role', 'authenticated', true)`,
+      [JSON.stringify({ sub: ctx.userId, role: "authenticated" }), ctx.userId],
+    );
   } else if (ctx.kind === "anon") {
     await raw(`set local role anon`);
   } else {
@@ -118,9 +115,15 @@ export class PgDatabase implements Database {
     const row = r.rows[0];
     if (!row) throw new DomainError("privilege_check", "cannot read connection role");
     if (row.rolinherit)
-      throw new DomainError("over_privileged", `Database role "${row.u}" inherits the privileges of the roles it can SET. Make it NOINHERIT (and re-grant its memberships) so that a statement without an explicit role switch fails closed.`);
+      throw new DomainError(
+        "over_privileged",
+        `Database role "${row.u}" inherits the privileges of the roles it can SET. Make it NOINHERIT (and re-grant its memberships) so that a statement without an explicit role switch fails closed.`,
+      );
     if (row.rolsuper || row.rolbypassrls || row.owns > 0)
-      throw new DomainError("over_privileged", `Database role "${row.u}" is a superuser, can bypass RLS, or owns tables. Connect as a least-privileged login role (aaf_app).`);
+      throw new DomainError(
+        "over_privileged",
+        `Database role "${row.u}" is a superuser, can bypass RLS, or owns tables. Connect as a least-privileged login role (aaf_app).`,
+      );
   }
   async close() {
     await this.pool.end();

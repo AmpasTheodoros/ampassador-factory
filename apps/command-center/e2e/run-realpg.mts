@@ -16,7 +16,10 @@ const h = await openRealPgHarness({ poolMax: 2 });
 let code = 1;
 try {
   await h.admin.exec(LOCAL_AUTH_SQL);
-  for (const [email, pw] of [["owner@example.test", "owner-password-1"], ["other@example.test", "other-password-2"]] as const)
+  for (const [email, pw] of [
+    ["owner@example.test", "owner-password-1"],
+    ["other@example.test", "other-password-2"],
+  ] as const)
     await h.admin.query(`insert into dev_users(email, password_hash) values ($1,$2)`, [email, hashPassword(pw)]);
   code = await new Promise<number>((resolve) => {
     const p = spawn(process.execPath, ["node_modules/@playwright/test/cli.js", "test", "--config", "playwright.realpg.config.ts"], {

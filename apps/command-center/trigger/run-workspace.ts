@@ -26,7 +26,11 @@ export const runWorkspaceTask = task({
         buildServices: makeBuildServices(database, env, { ledger }),
       });
       // retries and expiring leases wake the workspace again at the right time
-      if (summary.nextDueAt) await tasks.trigger(TRIGGER_TASK_ID, payload, { delay: new Date(summary.nextDueAt), idempotencyKey: `wake:${payload.workspaceId}:${summary.nextDueAt}` });
+      if (summary.nextDueAt)
+        await tasks.trigger(TRIGGER_TASK_ID, payload, {
+          delay: new Date(summary.nextDueAt),
+          idempotencyKey: `wake:${payload.workspaceId}:${summary.nextDueAt}`,
+        });
       return summary;
     } finally {
       await database.close();

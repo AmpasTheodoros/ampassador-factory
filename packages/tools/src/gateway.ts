@@ -49,7 +49,12 @@ export interface ToolDef<I = any, O = any> {
 export type InvokeResult =
   | { status: "executed"; output: unknown }
   | { status: "queued_for_approval"; approvalId: string; created: boolean }
-  | { status: "denied"; reason: string; code: "unknown_tool" | "invalid_input" | "missing_scope" | "needs_connection" | "rate_limited" | "budget_exceeded" | "approval_required" };
+  | {
+      status: "denied";
+      reason: string;
+      code:
+        "unknown_tool" | "invalid_input" | "missing_scope" | "needs_connection" | "rate_limited" | "budget_exceeded" | "approval_required";
+    };
 
 /**
  * Runs `fn` in its OWN committed transaction (a different pooled connection, workspace-pinned service role).
@@ -74,7 +79,11 @@ const INTERNAL_SCOPES = ["tasks:write", "drafts:write", "exports:write", "inbox:
 
 export class ToolGateway {
   private tools = new Map<string, ToolDef>();
-  constructor(private store: Store, tools: ToolDef[], private opts: GatewayOptions = {}) {
+  constructor(
+    private store: Store,
+    tools: ToolDef[],
+    private opts: GatewayOptions = {},
+  ) {
     for (const t of tools) {
       if (this.tools.has(t.toolId)) throw new Error(`duplicate tool ${t.toolId}`);
       this.tools.set(t.toolId, t);
@@ -118,12 +127,27 @@ export class ToolGateway {
     return this.store.rateHit(`tool:${ws}:${tool.toolId}`, tool.rateLimitPerMin, 60);
   }
 
-  async invoke(req: { workspaceId: string; actor: Actor; toolId: string; input: unknown; sourceContext?: Record<string, unknown>; idempotencyKey?: string }): Promise<InvokeResult> {
+  async invoke(req: {
+    workspaceId: string;
+    actor: Actor;
+    toolId: string;
+    input: unknown;
+    sourceContext?: Record<string, unknown>;
+    idempotencyKey?: string;
+  }): Promise<InvokeResult> {
     const ws = req.workspaceId;
     const tool = this.tools.get(req.toolId);
     const inHash = payloadHash(req.input ?? null);
     const log = async (outcome: "executed" | "queued_for_approval" | "denied" | "failed", detail?: string, ms?: number) =>
-      this.store.insertToolCall(ws, { toolId: req.toolId, riskTier: tool?.riskTier ?? "read", actor: `${req.actor.kind}:${req.actor.id}`, outcome, inputHash: inHash, detail, durationMs: ms });
+      this.store.insertToolCall(ws, {
+        toolId: req.toolId,
+        riskTier: tool?.riskTier ?? "read",
+        actor: `${req.actor.kind}:${req.actor.id}`,
+        outcome,
+        inputHash: inHash,
+        detail,
+        durationMs: ms,
+      });
     const deny = async (code: Extract<InvokeResult, { status: "denied" }>["code"], reason: string): Promise<InvokeResult> => {
       await log("denied", `${code}: ${reason}`);
       return { status: "denied", code, reason };
@@ -135,26 +159,60 @@ export class ToolGateway {
     if (pre && pre.status === "denied") return deny(pre.code, pre.reason);
     if (!(await this.rateOk(ws, tool))) return deny("rate_limited", `Rate limit ${tool.rateLimitPerMin}/min exceeded`);
 
-    const needsApproval = tool.riskTier === "external_communication" || tool.riskTier === "financial_or_irreversible" || tool.approvalPolicy === "always" || tool.approvalPolicy === "always_double";
+    const needsApproval =
+      tool.riskTier === "external_communication" ||
+      tool.riskTier === "financial_or_irreversible" ||
+      tool.approvalPolicy === "always" ||
+      tool.approvalPolicy === "always_double";
     if (needsApproval) {
       const key = req.idempotencyKey ?? `${tool.toolId}:${inHash}`;
       const id = newId();
       const ttl = this.opts.approvalTtlMs ?? 24 * 3600_000;
       const r = await this.store.insertApproval({
-        id, workspaceId: ws, toolId: tool.toolId, riskTier: tool.riskTier, payload: parsed.data, payloadHash: payloadHash(parsed.data),
-        status: "awaiting_approval", summary: tool.summarize(parsed.data), sourceContext: req.sourceContext ?? {},
-        requestedBy: `${req.actor.kind}:${req.actor.id}`, expiresAt: new Date(this.now() + ttl).toISOString(), idempotencyKey: key,
+        id,
+        workspaceId: ws,
+        toolId: tool.toolId,
+        riskTier: tool.riskTier,
+        payload: parsed.data,
+        payloadHash: payloadHash(parsed.data),
+        status: "awaiting_approval",
+        summary: tool.summarize(parsed.data),
+        sourceContext: req.sourceContext ?? {},
+        requestedBy: `${req.actor.kind}:${req.actor.id}`,
+        expiresAt: new Date(this.now() + ttl).toISOString(),
+        idempotencyKey: key,
       });
-      if (r.created) await this.store.audit(ws, `${req.actor.kind}:${req.actor.id}`, "approval.requested", "approval", r.id, { toolId: tool.toolId, hash: payloadHash(parsed.data) });
+      if (r.created)
+        await this.store.audit(ws, `${req.actor.kind}:${req.actor.id}`, "approval.requested", "approval", r.id, {
+          toolId: tool.toolId,
+          hash: payloadHash(parsed.data),
+        });
       await log("queued_for_approval", `approval ${r.id}`);
       return { status: "queued_for_approval", approvalId: r.id, created: r.created };
     }
 
     const started = this.now();
     try {
-      const out = await this.runWithTimeout(tool, { workspaceId: ws, store: this.store, actor: req.actor, idempotencyKey: req.idempotencyKey ?? newId(), services: this.opts.services ?? {} }, parsed.data);
+      const out = await this.runWithTimeout(
+        tool,
+        {
+          workspaceId: ws,
+          store: this.store,
+          actor: req.actor,
+          idempotencyKey: req.idempotencyKey ?? newId(),
+          services: this.opts.services ?? {},
+        },
+        parsed.data,
+      );
       await log("executed", undefined, this.now() - started);
-      await this.store.audit(ws, `${req.actor.kind}:${req.actor.id}`, "tool.executed", "tool", tool.toolId, pick(parsed.data, tool.auditFields));
+      await this.store.audit(
+        ws,
+        `${req.actor.kind}:${req.actor.id}`,
+        "tool.executed",
+        "tool",
+        tool.toolId,
+        pick(parsed.data, tool.auditFields),
+      );
       return { status: "executed", output: out };
     } catch (e) {
       await log("failed", errMsg(e), this.now() - started);
@@ -191,12 +249,19 @@ export class ToolGateway {
       `update approvals set status='unknown_outcome' where workspace_id=$1 and status='executing' and executing_at < $2::timestamptz - make_interval(secs => $3) returning id`,
       [ws, nowIso, (this.opts.executingTimeoutMs ?? 5 * 60_000) / 1000],
     );
-    for (const r of stuck) await this.store.audit(ws, "system", "approval.outcome_unknown", "approval", r.id, { reason: "worker lost while executing" });
+    for (const r of stuck)
+      await this.store.audit(ws, "system", "approval.outcome_unknown", "approval", r.id, { reason: "worker lost while executing" });
     return rows.length + stuck.length;
   }
 
   /** Human decision. Only owner/admin; financial tier needs the payload hash echoed back as second confirmation. */
-  async decide(ws: string, approvalId: string, decision: "approve" | "reject", user: { id: string; role: string }, opts: { note?: string; confirmHash?: string } = {}) {
+  async decide(
+    ws: string,
+    approvalId: string,
+    decision: "approve" | "reject",
+    user: { id: string; role: string },
+    opts: { note?: string; confirmHash?: string } = {},
+  ) {
     if (!["owner", "admin"].includes(user.role)) throw new DomainError("forbidden", "Only owner/admin may decide approvals");
     await this.expireStale(ws);
     const a = await this.store.getApproval(ws, approvalId);
@@ -205,12 +270,19 @@ export class ToolGateway {
     if (decision === "approve") {
       const tool = this.tools.get(a["toolId"] as string);
       if (tool?.approvalPolicy === "always_double" || a["riskTier"] === "financial_or_irreversible") {
-        if (opts.confirmHash !== a["payloadHash"]) throw new DomainError("confirmation_required", "Second confirmation required: pass the payload hash");
+        if (opts.confirmHash !== a["payloadHash"])
+          throw new DomainError("confirmation_required", "Second confirmation required: pass the payload hash");
       }
     }
-    const ok = await this.store.transitionApproval(ws, approvalId, "awaiting_approval", decision === "approve" ? "approved" : "rejected", { decidedBy: user.id, note: opts.note });
+    const ok = await this.store.transitionApproval(ws, approvalId, "awaiting_approval", decision === "approve" ? "approved" : "rejected", {
+      decidedBy: user.id,
+      note: opts.note,
+    });
     if (!ok) throw new DomainError("bad_state", "Approval changed concurrently");
-    await this.store.audit(ws, `user:${user.id}`, `approval.${decision === "approve" ? "approved" : "rejected"}`, "approval", approvalId, { note: opts.note ?? null, hash: a["payloadHash"] });
+    await this.store.audit(ws, `user:${user.id}`, `approval.${decision === "approve" ? "approved" : "rejected"}`, "approval", approvalId, {
+      note: opts.note ?? null,
+      hash: a["payloadHash"],
+    });
   }
 
   private rec<T>(ws: string, fn: (store: Store) => Promise<T>): Promise<T> {
@@ -258,12 +330,20 @@ export class ToolGateway {
     for (let i = 0; i < Math.max(1, tool.retry.max); i++) {
       attempt++;
       try {
-        const out = await this.runWithTimeout(tool, { workspaceId: ws, store: this.store, actor: executor, idempotencyKey: approvalId, services: this.opts.services ?? {} }, parsed.data);
+        const out = await this.runWithTimeout(
+          tool,
+          { workspaceId: ws, store: this.store, actor: executor, idempotencyKey: approvalId, services: this.opts.services ?? {} },
+          parsed.data,
+        );
         const n = attempt;
         await this.rec(ws, async (s) => {
           await s.insertReceipt(ws, approvalId, n, true, out, null, actorStr);
           await s.transitionApproval(ws, approvalId, "executing", "succeeded");
-          await s.audit(ws, actorStr, "approval.executed", "approval", approvalId, { toolId: tool.toolId, attempt: n, ...pick(parsed.data, tool.auditFields) });
+          await s.audit(ws, actorStr, "approval.executed", "approval", approvalId, {
+            toolId: tool.toolId,
+            attempt: n,
+            ...pick(parsed.data, tool.auditFields),
+          });
         });
         return { ok: true as const, unknown: false as const, output: out };
       } catch (e) {
@@ -293,14 +373,28 @@ export class ToolGateway {
    * Operator resolution of an 'unknown_outcome' approval, after checking the real system (the mailbox, the bank...).
    * 'delivered' => the effect did happen: record success, never send again. 'not_delivered' => it did not: becomes 'failed' so it can be replayed.
    */
-  async reconcile(ws: string, approvalId: string, user: { id: string; role: string }, outcome: "delivered" | "not_delivered", note: string) {
+  async reconcile(
+    ws: string,
+    approvalId: string,
+    user: { id: string; role: string },
+    outcome: "delivered" | "not_delivered",
+    note: string,
+  ) {
     if (!["owner", "admin"].includes(user.role)) throw new DomainError("forbidden", "Only owner/admin may reconcile");
     if (!note.trim()) throw new DomainError("note_required", "Say how you checked (e.g. 'found it in Sent')");
     const to = outcome === "delivered" ? "succeeded" : "failed";
     const ok = await this.store.transitionApproval(ws, approvalId, "unknown_outcome", to, { decidedBy: user.id, note });
     if (!ok) throw new DomainError("bad_state", "Only approvals with an unknown outcome can be reconciled");
     const attempt = (await this.store.listReceipts(ws, approvalId)).length + 1;
-    await this.store.insertReceipt(ws, approvalId, attempt, outcome === "delivered", { reconciled: true, outcome, note }, outcome === "delivered" ? null : "reconciled as not delivered", `user:${user.id}`);
+    await this.store.insertReceipt(
+      ws,
+      approvalId,
+      attempt,
+      outcome === "delivered",
+      { reconciled: true, outcome, note },
+      outcome === "delivered" ? null : "reconciled as not delivered",
+      `user:${user.id}`,
+    );
     await this.store.audit(ws, `user:${user.id}`, `approval.reconciled_${outcome}`, "approval", approvalId, { note });
   }
 

@@ -50,6 +50,8 @@ export async function currentUser(): Promise<AuthUser | null> {
 export interface WithAppOptions {
   mutating?: boolean;
   noRedirect?: boolean;
+  /** Extra per-user limit for expensive or sensitive actions (model calls, decisions). Distributed, stored in Postgres. */
+  rate?: { name: string; max: number; windowSeconds: number };
 }
 
 /**
@@ -73,7 +75,10 @@ export async function withApp<T>(fn: (app: App) => Promise<T>, opts: WithAppOpti
   try {
     return await database.run({ kind: "user", userId: user.id }, async (q: Queryable) => {
       const store = new Store(q);
-      if (!(await store.rateHit(`req:${user.id}`, opts.mutating ? 60 : 240, 60))) throw new DomainError("rate_limited", "Too many requests; slow down");
+      if (!(await store.rateHit(`req:${user.id}`, opts.mutating ? 60 : 240, 60)))
+        throw new DomainError("rate_limited", "Too many requests; slow down");
+      if (opts.rate && !(await store.rateHit(`act:${opts.rate.name}:${user.id}`, opts.rate.max, opts.rate.windowSeconds)))
+        throw new DomainError("rate_limited", `Too many "${opts.rate.name}" requests; wait a minute`);
       let m = await store.firstWorkspaceFor(user.id);
       if (!m) {
         const id = await store.provisionWorkspace(env.AAF_OWNER_NAME);
@@ -81,10 +86,18 @@ export async function withApp<T>(fn: (app: App) => Promise<T>, opts: WithAppOpti
         m = { id, role: "owner" };
       }
       const ws = m.id;
-      const { deps, router } = buildBrainDeps(store, runtimeEnv(), networkRadarFromEnv(runtimeEnv()), (e) => tel.modelCall({ ...e, model: e.modelLabel }), { database, ledger: ledgerDb });
+      const { deps, router } = buildBrainDeps(
+        store,
+        runtimeEnv(),
+        networkRadarFromEnv(runtimeEnv()),
+        (e) => tel.modelCall({ ...e, model: e.modelLabel }),
+        { database, ledger: ledgerDb },
+      );
       flush = async () => {
         if (router.pendingCosts().length === 0) return;
-        await database.run({ kind: "service", workspaceId: ws, reason: "cost-flush" }, (sq) => router.flushCosts(new Store(sq)).then(() => undefined));
+        await database.run({ kind: "service", workspaceId: ws, reason: "cost-flush" }, (sq) =>
+          router.flushCosts(new Store(sq)).then(() => undefined),
+        );
       };
       return fn({ user, workspaceId: ws, role: m.role as Role, store, gateway: deps.gateway, deps, router });
     });

@@ -32,7 +32,16 @@ export class TxBudgetLedger implements BudgetLedger {
     return r[0]!.appBudgetReserve;
   }
   async settle(ws: string, id: string, s: Settlement) {
-    await this.q.query(`select app_budget_settle($1,$2,$3,$4,$5,$6,$7,$8)`, [ws, id, s.provider, s.model, s.tokensIn, s.tokensOut, s.costEur, s.kind]);
+    await this.q.query(`select app_budget_settle($1,$2,$3,$4,$5,$6,$7,$8)`, [
+      ws,
+      id,
+      s.provider,
+      s.model,
+      s.tokensIn,
+      s.tokensOut,
+      s.costEur,
+      s.kind,
+    ]);
   }
   async release(ws: string, id: string) {
     await this.q.query(`select app_budget_release($1,$2)`, [ws, id]);
@@ -49,7 +58,13 @@ export class AutonomousBudgetLedger implements BudgetLedger {
   private run<T>(ws: string, fn: (l: TxBudgetLedger) => Promise<T>) {
     return this.database.run({ kind: "service", workspaceId: ws, reason: "budget-ledger" }, (q) => fn(new TxBudgetLedger(q)));
   }
-  reserve(ws: string, id: string, amountEur: number) { return this.run(ws, (l) => l.reserve(ws, id, amountEur)); }
-  settle(ws: string, id: string, s: Settlement) { return this.run(ws, (l) => l.settle(ws, id, s)); }
-  release(ws: string, id: string) { return this.run(ws, (l) => l.release(ws, id)); }
+  reserve(ws: string, id: string, amountEur: number) {
+    return this.run(ws, (l) => l.reserve(ws, id, amountEur));
+  }
+  settle(ws: string, id: string, s: Settlement) {
+    return this.run(ws, (l) => l.settle(ws, id, s));
+  }
+  release(ws: string, id: string) {
+    return this.run(ws, (l) => l.release(ws, id));
+  }
 }

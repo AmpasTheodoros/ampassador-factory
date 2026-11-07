@@ -51,15 +51,20 @@ export interface SqlAdmin {
 export async function runMigrations(admin: SqlAdmin, dir = findMigrationsDir()): Promise<{ applied: string[]; total: number }> {
   await admin.exec(`create table if not exists _migrations (name text primary key, checksum text, applied_at timestamptz default now())`);
   await admin.exec(`alter table _migrations add column if not exists checksum text`);
-  const done = new Map((await admin.rows(`select name, checksum from _migrations`)).map((r) => [String(r["name"]), r["checksum"] as string | null]));
-  const files = readdirSync(/*turbopackIgnore: true*/ dir).filter((f) => f.endsWith(".sql")).sort();
+  const done = new Map(
+    (await admin.rows(`select name, checksum from _migrations`)).map((r) => [String(r["name"]), r["checksum"] as string | null]),
+  );
+  const files = readdirSync(/*turbopackIgnore: true*/ dir)
+    .filter((f) => f.endsWith(".sql"))
+    .sort();
   const applied: string[] = [];
   for (const f of files) {
     const sql = readFileSync(join(/*turbopackIgnore: true*/ dir, f), "utf8");
     const sum = createHash("sha256").update(sql.replace(/\r\n/g, "\n")).digest("hex");
     if (done.has(f)) {
       const prev = done.get(f);
-      if (prev && prev !== sum) throw new Error(`Migration ${f} was modified after being applied (checksum mismatch). Add a new migration instead.`);
+      if (prev && prev !== sum)
+        throw new Error(`Migration ${f} was modified after being applied (checksum mismatch). Add a new migration instead.`);
       if (!prev) await admin.rows(`update _migrations set checksum=$2 where name=$1`, [f, sum]);
       continue;
     }
@@ -107,7 +112,8 @@ export class Db implements Queryable {
       await tx.query(`set local role authenticated`);
       await tx.query(`select set_config('request.jwt.claim.sub', $1, true)`, [userId]);
       return fn({
-        query: async <R = Row>(sql: string, params: unknown[] = []) => (await tx.query(sql, params)).rows.map((r) => camel(r as Row)) as R[],
+        query: async <R = Row>(sql: string, params: unknown[] = []) =>
+          (await tx.query(sql, params)).rows.map((r) => camel(r as Row)) as R[],
       });
     });
   }

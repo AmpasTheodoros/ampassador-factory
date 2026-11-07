@@ -19,7 +19,9 @@ export function statusTone(s: string): Tone {
   if (["awaiting_approval", "executing", "queued", "running", "not_connected", "new"].includes(s)) return "warn";
   return "neutral";
 }
-export const StatusBadge = ({ s }: { s: string }) => <Badge tone={statusTone(s)}>{s === "not_connected" ? "Needs connection" : s.replaceAll("_", " ")}</Badge>;
+export const StatusBadge = ({ s }: { s: string }) => (
+  <Badge tone={statusTone(s)}>{s === "not_connected" ? "Needs connection" : s.replaceAll("_", " ")}</Badge>
+);
 
 export function Card({ title, children, right }: { title?: string; children: ReactNode; right?: ReactNode }) {
   return (
@@ -40,16 +42,25 @@ export const PageTitle = ({ title, sub }: { title: string; sub?: string }) => (
     {sub && <p className="muted mt-1 text-sm">{sub}</p>}
   </header>
 );
-export const Empty = ({ children }: { children: ReactNode }) => <p className="muted rounded-lg border border-dashed border-[var(--line)] p-4 text-sm">{children}</p>;
+export const Empty = ({ children }: { children: ReactNode }) => (
+  <p className="muted rounded-lg border border-dashed border-[var(--line)] p-4 text-sm">{children}</p>
+);
 
-export function Provenance({ items }: { items: { source: string; recordId?: string; retrievedAt: string; kind?: string; note?: string }[] }) {
+export function Provenance({
+  items,
+}: {
+  items: { source: string; recordId?: string; retrievedAt: string; kind?: string; note?: string }[];
+}) {
   return (
     <ul className="space-y-1 text-xs">
       {items.map((p, i) => (
         <li key={i} className="muted">
           <span className="font-mono">{p.source}</span>
           {p.recordId ? <span className="font-mono"> #{p.recordId.slice(0, 8)}</span> : null}
-          {" · "}{p.kind ?? "record"}{" · "}{new Date(p.retrievedAt).toISOString().slice(0, 16).replace("T", " ")}
+          {" · "}
+          {p.kind ?? "record"}
+          {" · "}
+          {new Date(p.retrievedAt).toISOString().slice(0, 16).replace("T", " ")}
           {p.note ? ` · ${p.note}` : ""}
         </li>
       ))}
@@ -70,5 +81,12 @@ const ORIGIN: Record<Origin, { label: string; tone: Tone; title: string }> = {
 };
 export function OriginBadge({ kind, detail }: { kind: Origin; detail?: string }) {
   const o = ORIGIN[kind];
-  return <span title={o.title}><Badge tone={o.tone}>{o.label}{detail ? ` · ${detail}` : ""}</Badge></span>;
+  return (
+    <span title={o.title}>
+      <Badge tone={o.tone}>
+        {o.label}
+        {detail ? ` · ${detail}` : ""}
+      </Badge>
+    </span>
+  );
 }

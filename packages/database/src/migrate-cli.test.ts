@@ -12,8 +12,12 @@ import { Db, LOCAL_BOOTSTRAP, LOCAL_GRANTS } from "./db";
 /** async on purpose: the in-process database server must keep answering while the CLI runs */
 function cli(cwd: string, env: Record<string, string>, args: string[]): Promise<{ status: number | null; stdout: string; stderr: string }> {
   return new Promise((res) => {
-    const p = spawn(process.execPath, [resolve(cwd, "node_modules/tsx/dist/cli.mjs"), "scripts/migrate.ts", ...args], { cwd, env: { ...process.env, ...env } });
-    let stdout = "", stderr = "";
+    const p = spawn(process.execPath, [resolve(cwd, "node_modules/tsx/dist/cli.mjs"), "scripts/migrate.ts", ...args], {
+      cwd,
+      env: { ...process.env, ...env },
+    });
+    let stdout = "",
+      stderr = "";
     p.stdout.on("data", (d) => (stdout += d));
     p.stderr.on("data", (d) => (stderr += d));
     p.on("close", (status) => res({ status, stdout, stderr }));
@@ -36,7 +40,9 @@ describe("db:migrate CLI", () => {
 
       const first = await run();
       expect(first.status, first.stdout + first.stderr).toBe(0);
-      expect(first.stdout).toMatch(/applied: 0001_init\.sql, 0002_approval_immutability\.sql, 0003_least_privilege\.sql, 0004_jobs\.sql, 0005_budget_and_unknown_outcome\.sql/);
+      expect(first.stdout).toMatch(
+        /applied: 0001_init\.sql, 0002_approval_immutability\.sql, 0003_least_privilege\.sql, 0004_jobs\.sql, 0005_budget_and_unknown_outcome\.sql/,
+      );
 
       const second = await run();
       expect(second.status, second.stderr).toBe(0);
@@ -47,9 +53,13 @@ describe("db:migrate CLI", () => {
       await empty.exec(LOCAL_GRANTS);
       const c = new pg.Client({ connectionString: "postgres://postgres:x@127.0.0.1:54413/postgres" });
       await c.connect();
-      const t = await c.query(`select count(*)::int as n from pg_tables where schemaname='public' and tablename in ('jobs','approvals','audit_log','rate_limits')`);
+      const t = await c.query(
+        `select count(*)::int as n from pg_tables where schemaname='public' and tablename in ('jobs','approvals','audit_log','rate_limits')`,
+      );
       expect(t.rows[0].n).toBe(4);
-      const g = await c.query(`select has_table_privilege('authenticated','audit_log','DELETE') as d, has_table_privilege('authenticated','audit_log','INSERT') as i, has_table_privilege('anon','tasks','SELECT') as a`);
+      const g = await c.query(
+        `select has_table_privilege('authenticated','audit_log','DELETE') as d, has_table_privilege('authenticated','audit_log','INSERT') as i, has_table_privilege('anon','tasks','SELECT') as a`,
+      );
       expect(g.rows[0]).toEqual({ d: false, i: true, a: false });
       await c.end();
     } finally {

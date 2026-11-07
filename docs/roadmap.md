@@ -33,3 +33,7 @@
 - Costs use configured prices; with none configured a deliberately pessimistic estimate is used.
 - A request holds one pooled connection for its whole duration, including model calls (15 s statement timeout, 20 s per model call).
 - No ESLint/Prettier configuration; dependency audit is advisory.
+
+## R1.6 status
+
+Implemented and verified on a real local PostgreSQL 17; every Supabase/AI/NetworkRadar/Trigger.dev/Vercel item is BLOCKED on accounts or authorisation, see `docs/r1.6-validation-report.md` and `docs/staging-validation.md`. Next milestone: close those blockers (R1.6 live pass), then R2.

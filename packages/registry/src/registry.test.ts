@@ -31,13 +31,16 @@ describe("registry honesty", () => {
     for (const a of AGENTS) for (const t of a.allowedToolIds) expect(ids.has(t), `${a.id} -> ${t}`).toBe(true);
   });
   it("agents may not hold a send tool directly: external tools still need approval in the gateway", () => {
-    for (const a of AGENTS) for (const t of a.allowedToolIds) {
-      const def = BUILTIN_TOOLS.find((x) => x.toolId === t)!;
-      if (def.riskTier === "external_communication" || def.riskTier === "financial_or_irreversible") expect(def.approvalPolicy).toMatch(/always/);
-    }
+    for (const a of AGENTS)
+      for (const t of a.allowedToolIds) {
+        const def = BUILTIN_TOOLS.find((x) => x.toolId === t)!;
+        if (def.riskTier === "external_communication" || def.riskTier === "financial_or_irreversible")
+          expect(def.approvalPolicy).toMatch(/always/);
+      }
   });
   it("no department is live without a live skill", () => {
-    for (const d of DEPARTMENTS.filter((d) => d.readiness === "live")) expect(SKILLS.some((s) => s.departmentId === d.id && s.readiness === "live")).toBe(true);
+    for (const d of DEPARTMENTS.filter((d) => d.readiness === "live"))
+      expect(SKILLS.some((s) => s.departmentId === d.id && s.readiness === "live")).toBe(true);
   });
   it("blueprints are all unconfigured templates", () => {
     expect(BLUEPRINTS.length).toBe(5);

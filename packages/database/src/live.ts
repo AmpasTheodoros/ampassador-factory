@@ -22,6 +22,9 @@ export interface RealPgHarness {
 export const DEFAULT_REALPG_ADMIN_URL = "postgres://postgres:local-admin-only@127.0.0.1:54330/postgres";
 const APP_ROLE_PASSWORD = "aaf-app-local-throwaway";
 
+// generated identifier, see above
+const DROP_DB = (name: string) => `drop database if exists ${name} with (force)`;
+
 function withDb(url: string, db: string, user?: string, password?: string): string {
   const u = new URL(url);
   u.pathname = `/${db}`;
@@ -82,16 +85,21 @@ export async function openRealPgHarness(opts: { poolMax?: number; adminUrl?: str
   await server.query(`set lock_timeout = '60s'`);
   await server.query(`select pg_advisory_lock(727001)`);
   try {
+    // dbName is generated here (aaf_t_ + random hex); identifiers cannot be bound as $n parameters
+    // eslint-disable-next-line no-restricted-syntax
     await server.query(`create database ${dbName}`);
     adminDb = new pg.Client({ connectionString: withDb(adminUrl, dbName) });
     await adminDb.connect();
     await adminDb.query(LOCAL_BOOTSTRAP);
-    await runMigrations({ exec: async (s) => void (await adminDb!.query(s)), rows: async (s, p) => (await adminDb!.query(s, p as unknown[])).rows });
+    await runMigrations({
+      exec: async (s) => void (await adminDb!.query(s)),
+      rows: async (s, p) => (await adminDb!.query(s, p as unknown[])).rows,
+    });
     await adminDb.query(LOCAL_GRANTS);
     await adminDb.query(ROLE_SETUP_SQL.replace("__PW__", APP_ROLE_PASSWORD));
   } catch (e) {
     await adminDb?.end().catch(() => {});
-    await server.query(`drop database if exists ${dbName} with (force)`).catch(() => {});
+    await server.query(DROP_DB(dbName)).catch(() => {});
     await server.end().catch(() => {});
     throw e;
   } finally {
@@ -102,13 +110,69 @@ export async function openRealPgHarness(opts: { poolMax?: number; adminUrl?: str
   const database = new PgDatabase({ connectionString: appUrl, max: opts.poolMax ?? 8, ssl: false });
   const ledgerDatabase = new PgDatabase({ connectionString: appUrl, max: 4, ssl: false });
   return {
-    admin, database, ledgerDatabase, appUrl, dbName,
+    admin,
+    database,
+    ledgerDatabase,
+    appUrl,
+    dbName,
     close: async () => {
       await database.close();
       await ledgerDatabase.close();
       await adminDb!.end();
-      await server.query(`drop database if exists ${dbName} with (force)`).catch(() => {});
+      await server.query(DROP_DB(dbName)).catch(() => {});
       await server.end();
     },
   };
+}
+
+/**
+ * The same harness shape, pointed at a dedicated Supabase STAGING project instead of a throw-away local database.
+ * Differences from the local harness: nothing is created or dropped at database level, the Supabase-provided pieces
+ * (auth.uid(), anon, authenticated) are NOT bootstrapped, and the application connects through the pooler URL you supply.
+ *
+ * Guard rails (all required, or it refuses to run):
+ *   AAF_STAGING_ADMIN_URL        owner connection of the STAGING project (used for migrations/fixtures only)
+ *   AAF_STAGING_APP_URL          pooler URL, user aaf_app.<ref>, port 6543 (what the app really uses)
+ *   AAF_STAGING_EXPECT_HOST      substring that MUST appear in both hostnames, e.g. the staging project ref
+ *   AAF_STAGING_ACK=data-will-be-added   the suites add test workspaces/users (random UUIDs) and cannot delete them (audit is append-only)
+ */
+export async function openStagingHarness(opts: { poolMax?: number } = {}): Promise<RealPgHarness> {
+  const adminUrl = process.env.AAF_STAGING_ADMIN_URL;
+  const appUrl = process.env.AAF_STAGING_APP_URL;
+  const expect = process.env.AAF_STAGING_EXPECT_HOST;
+  if (!adminUrl || !appUrl || !expect)
+    throw new Error("staging harness needs AAF_STAGING_ADMIN_URL, AAF_STAGING_APP_URL and AAF_STAGING_EXPECT_HOST");
+  if (process.env.AAF_STAGING_ACK !== "data-will-be-added")
+    throw new Error("set AAF_STAGING_ACK=data-will-be-added to confirm this is a dedicated staging project");
+  for (const [name, u] of [
+    ["admin", adminUrl],
+    ["app", appUrl],
+  ] as const)
+    if (!new URL(u).hostname.includes(expect))
+      throw new Error(`AAF_STAGING_${name.toUpperCase()}_URL host does not contain AAF_STAGING_EXPECT_HOST: refusing to touch it`);
+  if (/prod/i.test(expect)) throw new Error("AAF_STAGING_EXPECT_HOST looks like production: refusing");
+
+  const adminDb = new pg.Client({ connectionString: adminUrl, ssl: { rejectUnauthorized: true } });
+  await adminDb.connect();
+  const admin = new PgAdmin(adminDb);
+  await runMigrations({ exec: (s) => admin.exec(s), rows: async (s, p) => (await adminDb.query(s, p as unknown[])).rows });
+  const database = new PgDatabase({ connectionString: appUrl, max: opts.poolMax ?? 8 });
+  const ledgerDatabase = new PgDatabase({ connectionString: appUrl, max: 4 });
+  return {
+    admin,
+    database,
+    ledgerDatabase,
+    appUrl,
+    dbName: new URL(adminUrl).hostname,
+    close: async () => {
+      await database.close();
+      await ledgerDatabase.close();
+      await adminDb.end();
+    },
+  };
+}
+
+/** Picks the staging project when AAF_TEST_BACKEND=staging, otherwise a fresh database on the local real PostgreSQL. */
+export function openAnyRealHarness(opts: { poolMax?: number } = {}): Promise<RealPgHarness> {
+  return process.env.AAF_TEST_BACKEND === "staging" ? openStagingHarness(opts) : openRealPgHarness(opts);
 }

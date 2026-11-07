@@ -57,19 +57,28 @@ export function createLocalAuth(database: Database, jar: CookieJar, now: () => n
       return rows[0] ? { id: rows[0].id, email: rows[0].email } : null;
     },
     async signIn(email, password): Promise<SignInResult> {
-      const rows = await anon((q) => q.query<{ id: string; passwordHash: string }>(`select id, password_hash from dev_users where email = $1`, [email.toLowerCase()]));
+      const rows = await anon((q) =>
+        q.query<{ id: string; passwordHash: string }>(`select id, password_hash from dev_users where email = $1`, [email.toLowerCase()]),
+      );
       const u = rows[0];
       // constant-ish work whether or not the account exists
       const ok = verifyPassword(password, u?.passwordHash ?? hashPassword("x", Buffer.alloc(16)));
       if (!u || !ok) return { ok: false, reason: "invalid" };
       const token = randomBytes(32).toString("base64url");
-      await anon((q) => q.query(`insert into dev_sessions(token_hash, user_id, expires_at) values ($1,$2,$3)`, [sha(token), u.id, new Date(now() + SESSION_TTL_MS).toISOString()]));
+      await anon((q) =>
+        q.query(`insert into dev_sessions(token_hash, user_id, expires_at) values ($1,$2,$3)`, [
+          sha(token),
+          u.id,
+          new Date(now() + SESSION_TTL_MS).toISOString(),
+        ]),
+      );
       jar.set(token, SESSION_TTL_MS / 1000);
       return { ok: true };
     },
     async signOut() {
       const tok = jar.get();
-      if (tok) await anon((q) => q.query(`update dev_sessions set revoked_at = now() where token_hash = $1 and revoked_at is null`, [sha(tok)]));
+      if (tok)
+        await anon((q) => q.query(`update dev_sessions set revoked_at = now() where token_hash = $1 and revoked_at is null`, [sha(tok)]));
       jar.clear();
     },
   };
@@ -77,6 +86,9 @@ export function createLocalAuth(database: Database, jar: CookieJar, now: () => n
 
 export async function seedDevUser(database: Database, email: string, password: string) {
   await database.run({ kind: "anon" }, (q) =>
-    q.query(`insert into dev_users(email, password_hash) values ($1,$2) on conflict (email) do nothing`, [email.toLowerCase(), hashPassword(password)]),
+    q.query(`insert into dev_users(email, password_hash) values ($1,$2) on conflict (email) do nothing`, [
+      email.toLowerCase(),
+      hashPassword(password),
+    ]),
   );
 }

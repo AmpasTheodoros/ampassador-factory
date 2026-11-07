@@ -21,7 +21,20 @@ beforeAll(async () => {
   await store.createTask(WA, { title: "A secret task" });
   await store.createTask(WB, { title: "B secret task" });
   approvalA = newId();
-  await store.insertApproval({ id: approvalA, workspaceId: WA, toolId: "gmail.send", riskTier: "external_communication", payload: { to: "x" }, payloadHash: "h", status: "awaiting_approval", summary: "s", sourceContext: {}, requestedBy: "agent", expiresAt: new Date(Date.now() + 1e6).toISOString(), idempotencyKey: "k1" });
+  await store.insertApproval({
+    id: approvalA,
+    workspaceId: WA,
+    toolId: "gmail.send",
+    riskTier: "external_communication",
+    payload: { to: "x" },
+    payloadHash: "h",
+    status: "awaiting_approval",
+    summary: "s",
+    sourceContext: {},
+    requestedBy: "agent",
+    expiresAt: new Date(Date.now() + 1e6).toISOString(),
+    idempotencyKey: "k1",
+  });
   await store.audit(WA, "system", "seed", "x");
 });
 
@@ -35,12 +48,16 @@ describe("RLS (allow/deny, two workspaces)", () => {
     expect(rows.map((r) => r.title)).toEqual(["B secret task"]);
   });
   it("tenant B cannot insert into A", async () => {
-    await expect(db.asUser(UB, (q) => q.query(`insert into tasks(id,workspace_id,title) values ($1,$2,'evil')`, [newId(), WA]))).rejects.toThrow();
+    await expect(
+      db.asUser(UB, (q) => q.query(`insert into tasks(id,workspace_id,title) values ($1,$2,'evil')`, [newId(), WA])),
+    ).rejects.toThrow();
   });
   it("viewer can read but not write", async () => {
     const rows = await db.asUser(VIEW, (q) => q.query(`select 1 from tasks`));
     expect(rows.length).toBe(1);
-    await expect(db.asUser(VIEW, (q) => q.query(`insert into tasks(id,workspace_id,title) values ($1,$2,'v')`, [newId(), WA]))).rejects.toThrow();
+    await expect(
+      db.asUser(VIEW, (q) => q.query(`insert into tasks(id,workspace_id,title) values ($1,$2,'v')`, [newId(), WA])),
+    ).rejects.toThrow();
   });
   it("viewer cannot approve; other tenant cannot approve; owner can", async () => {
     const upd = (u: string) => db.asUser(u, (q) => q.query(`update approvals set status='approved' where id=$1 returning id`, [approvalA]));
@@ -50,7 +67,9 @@ describe("RLS (allow/deny, two workspaces)", () => {
   });
   it("audit_log: a member may append for their own workspace only; no update/delete for anyone", async () => {
     await db.asUser(UA, (q) => q.query(`insert into audit_log(workspace_id,actor,action,entity) values ($1,'u','a','e')`, [WA]));
-    await expect(db.asUser(UA, (q) => q.query(`insert into audit_log(workspace_id,actor,action,entity) values ($1,'u','a','e')`, [WB]))).rejects.toThrow();
+    await expect(
+      db.asUser(UA, (q) => q.query(`insert into audit_log(workspace_id,actor,action,entity) values ($1,'u','a','e')`, [WB])),
+    ).rejects.toThrow();
     await expect(db.asUser(UA, (q) => q.query(`update audit_log set action='x'`))).rejects.toThrow();
     await expect(db.query(`delete from audit_log`)).rejects.toThrow(/append-only/);
   });

@@ -14,12 +14,25 @@ let sent: string[];
 let failuresLeft: number;
 
 const mk = (over: Partial<ToolDef> = {}): ToolDef => ({
-  toolId: "test.send", description: "spy", connector: "internal", requiredScopes: ["exports:write"],
-  riskTier: "external_communication", idempotency: "key_required", rateLimitPerMin: 100, approvalPolicy: "always",
-  inputSchema: z.object({ to: z.string(), n: z.number().default(1) }), outputSchema: z.object({ ok: z.literal(true) }),
-  timeoutMs: 200, retry: { max: 3, backoffMs: 1 }, auditFields: ["to"], summarize: (i: any) => `send ${i.to}`,
+  toolId: "test.send",
+  description: "spy",
+  connector: "internal",
+  requiredScopes: ["exports:write"],
+  riskTier: "external_communication",
+  idempotency: "key_required",
+  rateLimitPerMin: 100,
+  approvalPolicy: "always",
+  inputSchema: z.object({ to: z.string(), n: z.number().default(1) }),
+  outputSchema: z.object({ ok: z.literal(true) }),
+  timeoutMs: 200,
+  retry: { max: 3, backoffMs: 1 },
+  auditFields: ["to"],
+  summarize: (i: any) => `send ${i.to}`,
   async execute(ctx, i: any) {
-    if (failuresLeft > 0) { failuresLeft--; throw safeToRetry("connection refused before sending"); }
+    if (failuresLeft > 0) {
+      failuresLeft--;
+      throw safeToRetry("connection refused before sending");
+    }
     sent.push(`${i.to}:${ctx.idempotencyKey}`);
     return { ok: true as const };
   },
@@ -31,7 +44,8 @@ beforeEach(async () => {
   db = await Db.open();
   store = new Store(db);
   await store.ensureWorkspace(WS, "A", "00000000-0000-4000-8000-0000000000aa");
-  sent = []; failuresLeft = 0;
+  sent = [];
+  failuresLeft = 0;
 });
 
 describe("external communication cannot run before approval", () => {
@@ -73,8 +87,20 @@ describe("external communication cannot run before approval", () => {
   });
   it("same idempotency key -> one approval; double execute sends once", async () => {
     const g = gw([mk()]);
-    const a = (await g.invoke({ workspaceId: WS, actor: agent, toolId: "test.send", input: { to: "a@x.com" }, idempotencyKey: "k" })) as any;
-    const b = (await g.invoke({ workspaceId: WS, actor: agent, toolId: "test.send", input: { to: "a@x.com" }, idempotencyKey: "k" })) as any;
+    const a = (await g.invoke({
+      workspaceId: WS,
+      actor: agent,
+      toolId: "test.send",
+      input: { to: "a@x.com" },
+      idempotencyKey: "k",
+    })) as any;
+    const b = (await g.invoke({
+      workspaceId: WS,
+      actor: agent,
+      toolId: "test.send",
+      input: { to: "a@x.com" },
+      idempotencyKey: "k",
+    })) as any;
     expect(b.approvalId).toBe(a.approvalId);
     expect(b.created).toBe(false);
     await g.decide(WS, a.approvalId, "approve", OWNER);
@@ -119,7 +145,12 @@ describe("authorization and availability", () => {
   it("scope revoked between approval and execution fails closed", async () => {
     await store.upsertConnection(WS, "gmail", "connected", "x", ["gmail.send"]);
     const g = gw(BUILTIN_TOOLS);
-    const q: any = await g.invoke({ workspaceId: WS, actor: agent, toolId: "gmail.send", input: { to: "a@x.com", subject: "s", body: "b" } });
+    const q: any = await g.invoke({
+      workspaceId: WS,
+      actor: agent,
+      toolId: "gmail.send",
+      input: { to: "a@x.com", subject: "s", body: "b" },
+    });
     expect(q.status).toBe("queued_for_approval");
     await g.decide(WS, q.approvalId, "approve", OWNER);
     await store.upsertConnection(WS, "gmail", "not_connected", "revoked", []);
@@ -151,7 +182,11 @@ describe("authorization and availability", () => {
 describe("reliability", () => {
   it("retries with backoff then succeeds; receipts record each attempt", async () => {
     const delays: number[] = [];
-    const g = gw([mk()], { sleep: async (ms: number) => { delays.push(ms); } });
+    const g = gw([mk()], {
+      sleep: async (ms: number) => {
+        delays.push(ms);
+      },
+    });
     const id = ((await g.invoke({ workspaceId: WS, actor: agent, toolId: "test.send", input: { to: "a@x.com" } })) as any).approvalId;
     await g.decide(WS, id, "approve", OWNER);
     failuresLeft = 2;
@@ -176,7 +211,15 @@ describe("reliability", () => {
   });
   it("a timeout on a tool that SENDS is an unknown outcome: recorded, not retried", async () => {
     let calls = 0;
-    const slow = mk({ timeoutMs: 20, retry: { max: 3, backoffMs: 1 }, async execute() { calls++; await new Promise((r) => setTimeout(r, 200)); return { ok: true as const }; } });
+    const slow = mk({
+      timeoutMs: 20,
+      retry: { max: 3, backoffMs: 1 },
+      async execute() {
+        calls++;
+        await new Promise((r) => setTimeout(r, 200));
+        return { ok: true as const };
+      },
+    });
     const g = gw([slow]);
     const id = ((await g.invoke({ workspaceId: WS, actor: agent, toolId: "test.send", input: { to: "a" } })) as any).approvalId;
     await g.decide(WS, id, "approve", OWNER);
@@ -188,7 +231,12 @@ describe("reliability", () => {
   });
   it("permanent errors are not retried", async () => {
     let calls = 0;
-    const t = mk({ async execute() { calls++; throw new DomainError("permanent_x", "nope"); } });
+    const t = mk({
+      async execute() {
+        calls++;
+        throw new DomainError("permanent_x", "nope");
+      },
+    });
     const g = gw([t]);
     const id = ((await g.invoke({ workspaceId: WS, actor: agent, toolId: "test.send", input: { to: "a" } })) as any).approvalId;
     await g.decide(WS, id, "approve", OWNER);
@@ -206,14 +254,18 @@ describe("reliability", () => {
   });
   it("export tool never claims delivery", async () => {
     const g = gw(BUILTIN_TOOLS);
-    const q: any = await g.invoke({ workspaceId: WS, actor: agent, toolId: "email.export_reply_draft", input: { to: "a@x.com", subject: "Re: hi", body: "hello" } });
+    const q: any = await g.invoke({
+      workspaceId: WS,
+      actor: agent,
+      toolId: "email.export_reply_draft",
+      input: { to: "a@x.com", subject: "Re: hi", body: "hello" },
+    });
     await g.decide(WS, q.approvalId, "approve", OWNER);
     const r: any = await g.execute(WS, q.approvalId);
     expect(r.output.delivered).toBe(false);
     expect(r.output.eml).toContain("Subject: Re: hi");
   });
 });
-
 
 describe("an execution that might have succeeded is never blindly repeated", () => {
   const approveOne = async (g: ToolGateway) => {
@@ -223,14 +275,28 @@ describe("an execution that might have succeeded is never blindly repeated", () 
   };
   it("an unclassified error from a sending tool is an unknown outcome (default is the safe side)", async () => {
     let calls = 0;
-    const g = gw([mk({ async execute() { calls++; throw new Error("socket hang up after write"); } })]);
+    const g = gw([
+      mk({
+        async execute() {
+          calls++;
+          throw new Error("socket hang up after write");
+        },
+      }),
+    ]);
     const id = await approveOne(g);
     expect(await g.execute(WS, id)).toMatchObject({ ok: false, unknown: true });
     expect(calls).toBe(1);
   });
   it("only errors the connector marks safe_to_retry are retried (nothing was sent)", async () => {
     let calls = 0;
-    const g = gw([mk({ async execute() { calls++; throw safeToRetry("DNS failure before the request left"); } })]);
+    const g = gw([
+      mk({
+        async execute() {
+          calls++;
+          throw safeToRetry("DNS failure before the request left");
+        },
+      }),
+    ]);
     const id = await approveOne(g);
     expect(await g.execute(WS, id)).toMatchObject({ ok: false, unknown: false });
     expect(calls).toBe(3);
@@ -238,14 +304,31 @@ describe("an execution that might have succeeded is never blindly repeated", () 
   });
   it("tools that neither send nor spend (write_low behind an approval) keep generic retry-with-backoff", async () => {
     let calls = 0;
-    const g = gw([mk({ riskTier: "write_low", approvalPolicy: "always", async execute() { calls++; if (calls < 3) throw new Error("flaky"); return { ok: true as const }; } })]);
+    const g = gw([
+      mk({
+        riskTier: "write_low",
+        approvalPolicy: "always",
+        async execute() {
+          calls++;
+          if (calls < 3) throw new Error("flaky");
+          return { ok: true as const };
+        },
+      }),
+    ]);
     const id = await approveOne(g);
     expect((await g.execute(WS, id)).ok).toBe(true);
     expect(calls).toBe(3);
   });
   it("an unknown outcome cannot be replayed or executed again", async () => {
     let calls = 0;
-    const g = gw([mk({ async execute() { calls++; throw new Error("timeout-ish"); } })]);
+    const g = gw([
+      mk({
+        async execute() {
+          calls++;
+          throw new Error("timeout-ish");
+        },
+      }),
+    ]);
     const id = await approveOne(g);
     await g.execute(WS, id);
     await expect(g.replay(WS, id, OWNER)).rejects.toThrow(/Only failed approvals/);
@@ -255,7 +338,14 @@ describe("an execution that might have succeeded is never blindly repeated", () 
   });
   it("reconcile 'delivered' records success and never sends again; the receipt says it was reconciled by a human", async () => {
     let calls = 0;
-    const g = gw([mk({ async execute() { calls++; throw new Error("lost connection after send"); } })]);
+    const g = gw([
+      mk({
+        async execute() {
+          calls++;
+          throw new Error("lost connection after send");
+        },
+      }),
+    ]);
     const id = await approveOne(g);
     await g.execute(WS, id);
     await expect(g.reconcile(WS, id, VIEWER, "delivered", "saw it")).rejects.toThrow(/Only owner/);
@@ -268,11 +358,22 @@ describe("an execution that might have succeeded is never blindly repeated", () 
     await expect(g.execute(WS, id)).rejects.toThrow();
     await expect(g.replay(WS, id, OWNER)).rejects.toThrow();
     expect(calls).toBe(1);
-    expect((await store.listAudit(WS, "approval", id)).map((a) => a["action"])).toEqual(expect.arrayContaining(["approval.outcome_unknown", "approval.reconciled_delivered"]));
+    expect((await store.listAudit(WS, "approval", id)).map((a) => a["action"])).toEqual(
+      expect.arrayContaining(["approval.outcome_unknown", "approval.reconciled_delivered"]),
+    );
   });
   it("reconcile 'not_delivered' unlocks an explicit operator replay, which then sends exactly once more", async () => {
     let calls = 0;
-    const g = gw([mk({ async execute(ctx) { calls++; if (calls === 1) throw new Error("timeout-ish"); sent.push(ctx.idempotencyKey); return { ok: true as const }; } })]);
+    const g = gw([
+      mk({
+        async execute(ctx) {
+          calls++;
+          if (calls === 1) throw new Error("timeout-ish");
+          sent.push(ctx.idempotencyKey);
+          return { ok: true as const };
+        },
+      }),
+    ]);
     const id = await approveOne(g);
     await g.execute(WS, id);
     await g.reconcile(WS, id, OWNER, "not_delivered", "nothing in Sent, recipient confirms nothing arrived");
@@ -284,10 +385,20 @@ describe("an execution that might have succeeded is never blindly repeated", () 
   it("a worker that died mid-execution leaves an 'executing' approval that becomes unknown_outcome, not a retry", async () => {
     let now = Date.now();
     let calls = 0;
-    const g = gw([mk({ async execute() { calls++; return { ok: true as const }; } })], { now: () => now, executingTimeoutMs: 60_000 });
+    const g = gw(
+      [
+        mk({
+          async execute() {
+            calls++;
+            return { ok: true as const };
+          },
+        }),
+      ],
+      { now: () => now, executingTimeoutMs: 60_000 },
+    );
     const id = await approveOne(g);
     await db.query(`update approvals set status='executing', executing_at=$2 where id=$1`, [id, new Date(now).toISOString()]); // claimed, then the worker vanished
-    expect(await g.expireStale(WS)).toBe(0);                       // still within the window
+    expect(await g.expireStale(WS)).toBe(0); // still within the window
     now += 61_000;
     expect(await g.expireStale(WS)).toBe(1);
     expect((await store.getApproval(WS, id))!["status"]).toBe("unknown_outcome");

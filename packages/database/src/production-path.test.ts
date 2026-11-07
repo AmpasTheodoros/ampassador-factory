@@ -10,7 +10,10 @@ const UMEMBER = "33333333-0000-4000-8000-00000000000c";
 const UVIEWER = "44444444-0000-4000-8000-00000000000d";
 
 const suites: [string, () => Promise<TestHarness>][] = [
-  [process.env.AAF_TEST_BACKEND === "realpg" ? "REAL PostgreSQL 17 as aaf_app login role" : "in-process (Database.run + SET LOCAL ROLE)", openTestHarness],
+  [
+    process.env.AAF_TEST_BACKEND === "realpg" ? "REAL PostgreSQL 17 as aaf_app login role" : "in-process (Database.run + SET LOCAL ROLE)",
+    openTestHarness,
+  ],
   ["wire protocol (node-postgres PgDatabase)", () => openWireHarness(54411)],
 ];
 
@@ -29,7 +32,20 @@ for (const [label, open] of suites) {
       await asUser(UA, async (s) => {
         await s.createTask(WA, { title: "A-secret" });
         approvalA = newId();
-        await s.insertApproval({ id: approvalA, workspaceId: WA, toolId: "email.export_reply_draft", riskTier: "external_communication", payload: { to: "a@x.com" }, payloadHash: payloadHash({ to: "a@x.com" }), status: "awaiting_approval", summary: "A approval", sourceContext: {}, requestedBy: "agent:test", expiresAt: new Date(Date.now() + 1e7).toISOString(), idempotencyKey: "k" });
+        await s.insertApproval({
+          id: approvalA,
+          workspaceId: WA,
+          toolId: "email.export_reply_draft",
+          riskTier: "external_communication",
+          payload: { to: "a@x.com" },
+          payloadHash: payloadHash({ to: "a@x.com" }),
+          status: "awaiting_approval",
+          summary: "A approval",
+          sourceContext: {},
+          requestedBy: "agent:test",
+          expiresAt: new Date(Date.now() + 1e7).toISOString(),
+          idempotencyKey: "k",
+        });
         await s.audit(WA, "user:a", "seed", "x", "1");
         await s.upsertConnection(WA, "gmail", "not_connected", "x");
       });
@@ -45,8 +61,12 @@ for (const [label, open] of suites) {
 
     it("reads never cross tenants: tasks, approvals, audit, connections, events, workspaces", async () => {
       const seenByB = await asUser(UB, async (s) => ({
-        tasks: await s.listTasks(WA), approvals: await s.listApprovals(WA), audit: await s.listAudit(WA),
-        conns: await s.listConnections(WA), ws: await s.getWorkspace(WA), receipts: await s.listReceipts(WA, approvalA),
+        tasks: await s.listTasks(WA),
+        approvals: await s.listApprovals(WA),
+        audit: await s.listAudit(WA),
+        conns: await s.listConnections(WA),
+        ws: await s.getWorkspace(WA),
+        receipts: await s.listReceipts(WA, approvalA),
       }));
       expect(seenByB.tasks).toHaveLength(0);
       expect(seenByB.approvals).toHaveLength(0);
@@ -76,7 +96,10 @@ for (const [label, open] of suites) {
       expect((await asUser(UVIEWER, (s) => s.listTasks(WA))).length).toBe(1);
       await expect(asUser(UVIEWER, (s) => s.createTask(WA, { title: "v" }))).rejects.toThrow();
       await expect(asUser(UVIEWER, (s) => s.audit(WA, "user:v", "x", "y"))).rejects.toThrow();
-      const decide = (u: string) => h.database.run({ kind: "user", userId: u }, (q) => q.query(`update approvals set status='approved' where id=$1 returning id`, [approvalA]));
+      const decide = (u: string) =>
+        h.database.run({ kind: "user", userId: u }, (q) =>
+          q.query(`update approvals set status='approved' where id=$1 returning id`, [approvalA]),
+        );
       expect(await decide(UVIEWER)).toHaveLength(0);
       expect(await decide(UMEMBER)).toHaveLength(0);
       await expect(asUser(UMEMBER, (s) => s.insertReceipt(WA, approvalA, 1, true, {}, null, "user:m"))).rejects.toThrow();
@@ -85,19 +108,40 @@ for (const [label, open] of suites) {
     });
 
     it("nobody can delete, rewrite audit, or edit memberships/workspace identity via the app role", async () => {
-      for (const sql of [`delete from tasks`, `delete from approvals`, `delete from audit_log`, `update audit_log set action='x'`, `insert into memberships values ('${WA}','${UB}','owner')`, `update memberships set role='owner'`, `delete from workspaces`, `insert into workspaces(id,name) values (gen_random_uuid(),'x')`]) {
-        await expect(h.database.run({ kind: "user", userId: UA }, (q) => q.query(sql)), sql).rejects.toThrow();
+      for (const sql of [
+        `delete from tasks`,
+        `delete from approvals`,
+        `delete from audit_log`,
+        `update audit_log set action='x'`,
+        `insert into memberships values ('${WA}','${UB}','owner')`,
+        `update memberships set role='owner'`,
+        `delete from workspaces`,
+        `insert into workspaces(id,name) values (gen_random_uuid(),'x')`,
+      ]) {
+        await expect(
+          h.database.run({ kind: "user", userId: UA }, (q) => q.query(sql)),
+          sql,
+        ).rejects.toThrow();
       }
     });
 
     it("workspace policy columns are owner-only", async () => {
-      await expect(asUser(UMEMBER, async (s) => s.db.query(`update workspaces set data_policy='cloud_allowed' where id=$1 returning id`, [WA]).then((r) => { if (!r.length) throw new Error("no rows"); }))).rejects.toThrow();
-      const r = await h.database.run({ kind: "user", userId: UA }, (q) => q.query(`update workspaces set monthly_budget_eur=30 where id=$1 returning id`, [WA]));
+      await expect(
+        asUser(UMEMBER, async (s) =>
+          s.db.query(`update workspaces set data_policy='cloud_allowed' where id=$1 returning id`, [WA]).then((r) => {
+            if (!r.length) throw new Error("no rows");
+          }),
+        ),
+      ).rejects.toThrow();
+      const r = await h.database.run({ kind: "user", userId: UA }, (q) =>
+        q.query(`update workspaces set monthly_budget_eur=30 where id=$1 returning id`, [WA]),
+      );
       expect(r).toHaveLength(1);
     });
 
     it("service context is confined to one workspace and cannot delete", async () => {
-      const svc = (ws: string, fn: (s: Store) => Promise<unknown>) => h.database.run({ kind: "service", workspaceId: ws, reason: "test" }, (q) => fn(new Store(q)));
+      const svc = (ws: string, fn: (s: Store) => Promise<unknown>) =>
+        h.database.run({ kind: "service", workspaceId: ws, reason: "test" }, (q) => fn(new Store(q)));
       expect(((await svc(WA, (s) => s.listTasks(WA))) as unknown[]).length).toBeGreaterThan(0);
       expect(((await svc(WA, (s) => s.listTasks(WB))) as unknown[]).length).toBe(0);
       await svc(WA, (s) => s.audit(WA, "service:job", "tick", "job"));
@@ -122,7 +166,12 @@ for (const [label, open] of suites) {
 
     it("failed transactions roll back everything", async () => {
       const before = (await h.admin.query(`select count(*)::int as n from tasks where workspace_id=$1`, [WA]))[0]!["n"];
-      await expect(asUser(UA, async (s) => { await s.createTask(WA, { title: "rolled back" }); throw new Error("boom"); })).rejects.toThrow("boom");
+      await expect(
+        asUser(UA, async (s) => {
+          await s.createTask(WA, { title: "rolled back" });
+          throw new Error("boom");
+        }),
+      ).rejects.toThrow("boom");
       expect((await h.admin.query(`select count(*)::int as n from tasks where workspace_id=$1`, [WA]))[0]!["n"]).toBe(before);
     });
 
@@ -137,7 +186,10 @@ describe("migrations", () => {
     const h = { close: async () => {} };
     const embedded = await Db.open();
     const pgl = embedded.pg;
-    const admin = { exec: async (s: string) => void (await pgl.exec(s)), rows: async (s: string, p?: unknown[]) => (await pgl.query(s, p)).rows as Record<string, unknown>[] };
+    const admin = {
+      exec: async (s: string) => void (await pgl.exec(s)),
+      rows: async (s: string, p?: unknown[]) => (await pgl.query(s, p)).rows as Record<string, unknown>[],
+    };
     expect((await runMigrations(admin)).applied).toEqual([]);
     await pgl.query(`update _migrations set checksum='tampered' where name like '0001%'`);
     await expect(runMigrations(admin)).rejects.toThrow(/modified after being applied/);

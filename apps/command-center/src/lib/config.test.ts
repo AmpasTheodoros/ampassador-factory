@@ -2,7 +2,13 @@ import { describe, it, expect } from "vitest";
 import { EnvSchema, isProd, productionProblems, authProviderName, getEnv, type Env } from "./config";
 
 const env = (o: Record<string, string | undefined>): Env => EnvSchema.parse({ ...o });
-const PROD_OK = { NODE_ENV: "production", DATABASE_URL: "postgres://aaf_app:x@pooler.supabase.com:6543/postgres", NEXT_PUBLIC_SUPABASE_URL: "https://x.supabase.co", NEXT_PUBLIC_SUPABASE_ANON_KEY: "anon", AAF_APP_ORIGIN: "https://cc.example.com" };
+const PROD_OK = {
+  NODE_ENV: "production",
+  DATABASE_URL: "postgres://aaf_app:x@pooler.supabase.com:6543/postgres",
+  NEXT_PUBLIC_SUPABASE_URL: "https://x.supabase.co",
+  NEXT_PUBLIC_SUPABASE_ANON_KEY: "anon",
+  AAF_APP_ORIGIN: "https://cc.example.com",
+};
 
 describe("production configuration guard", () => {
   it("a complete production config has no problems", () => {
@@ -11,7 +17,12 @@ describe("production configuration guard", () => {
   });
   it("missing pieces are named (by variable, never value)", () => {
     const p = productionProblems(env({ NODE_ENV: "production" }));
-    expect(p.map((x) => x.key).sort()).toEqual(["AAF_APP_ORIGIN", "DATABASE_URL", "NEXT_PUBLIC_SUPABASE_ANON_KEY", "NEXT_PUBLIC_SUPABASE_URL"]);
+    expect(p.map((x) => x.key).sort()).toEqual([
+      "AAF_APP_ORIGIN",
+      "DATABASE_URL",
+      "NEXT_PUBLIC_SUPABASE_ANON_KEY",
+      "NEXT_PUBLIC_SUPABASE_URL",
+    ]);
     expect(JSON.stringify(p)).not.toContain("postgres://");
   });
   it("the development auth provider is forbidden in production", () => {
@@ -31,6 +42,8 @@ describe("production configuration guard", () => {
   });
   it("trigger driver requires its secret; invalid values fail by name only", () => {
     expect(productionProblems(env({ ...PROD_OK, AAF_JOB_DRIVER: "trigger" })).map((x) => x.key)).toContain("TRIGGER_SECRET_KEY");
-    expect(() => getEnv({ NODE_ENV: "production", DATABASE_POOL_MAX: "9999", AAF_LLM_BASE_URL: "not a url" } as unknown as NodeJS.ProcessEnv)).toThrow(/DATABASE_POOL_MAX, AAF_LLM_BASE_URL/);
+    expect(() =>
+      getEnv({ NODE_ENV: "production", DATABASE_POOL_MAX: "9999", AAF_LLM_BASE_URL: "not a url" } as unknown as NodeJS.ProcessEnv),
+    ).toThrow(/DATABASE_POOL_MAX, AAF_LLM_BASE_URL/);
   });
 });

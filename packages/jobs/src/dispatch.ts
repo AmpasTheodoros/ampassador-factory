@@ -16,7 +16,11 @@ export interface JobDispatcher {
 export class LocalDispatcher<S> implements JobDispatcher {
   readonly name = "local" as const;
   last?: RunSummary;
-  constructor(private database: Database, private handlers: Handlers<S>, private opts: RunOptions<S>) {}
+  constructor(
+    private database: Database,
+    private handlers: Handlers<S>,
+    private opts: RunOptions<S>,
+  ) {}
   async dispatch(d: Dispatch) {
     this.last = await runWorkspace(this.database, d.workspaceId, this.handlers, this.opts);
   }
@@ -44,5 +48,7 @@ export class TriggerDispatcher implements JobDispatcher {
 
 export async function realTriggerSdk(): Promise<TriggerLike> {
   const { tasks } = await import("@trigger.dev/sdk");
-  return { trigger: async (id, payload, options) => ({ id: (await tasks.trigger(id, payload, { idempotencyKey: options.idempotencyKey })).id }) };
+  return {
+    trigger: async (id, payload, options) => ({ id: (await tasks.trigger(id, payload, { idempotencyKey: options.idempotencyKey })).id }),
+  };
 }
