@@ -1,0 +1,33 @@
+{
+  "name": "@aaf/command-center",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsc -p .",
+    "e2e": "playwright test"
+  },
+  "dependencies": {
+    "@aaf/brain": "workspace:*",
+    "@aaf/core": "workspace:*",
+    "@aaf/database": "workspace:*",
+    "@aaf/registry": "workspace:*",
+    "@aaf/tools": "workspace:*",
+    "lucide-react": "^1.0.0",
+    "next": "16.4.5",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "zod": "^4.1.0",
+    "server-only": "^0.0.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.55.0",
+    "@tailwindcss/postcss": "^4.1.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "tailwindcss": "^4.1.0"
+  }
+}
