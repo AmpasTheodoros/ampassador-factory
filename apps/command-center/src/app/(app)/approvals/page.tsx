@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { withApp } from "@/lib/runtime";
-import { decideApproval, replayApproval } from "@/lib/actions";
+import { decideApproval, replayApproval, reconcileApproval } from "@/lib/actions";
 import { Card, PageTitle, Empty, Badge, DemoBadge, OriginBadge, Provenance, StatusBadge, fmt } from "@/components/ui";
 
 export const maxDuration = 60; // triage and approval actions run model calls and jobs
@@ -69,6 +69,22 @@ export default async function Approvals({ searchParams }: { searchParams: Promis
                     <button name="decision" value="reject" className="btn btn-danger" type="submit">Reject</button>
                   </div>
                 </form>
+              )}
+              {status === "unknown_outcome" && (
+                <div className="mt-4 space-y-2 rounded-md border border-[var(--bad)] p-3 text-sm" role="alert">
+                  <p><b>Outcome unknown.</b> The send was attempted but the result was not confirmed (timeout or lost worker). It will <b>not</b> be retried automatically, because it may already have gone out. Check the real system (for example the Sent folder), then record what you found.</p>
+                  {canDecide ? (
+                    <form action={reconcileApproval} className="space-y-2">
+                      <input type="hidden" name="id" value={String(sel["id"])} />
+                      <label className="block text-xs" htmlFor="rnote">How did you check? (required)</label>
+                      <input id="rnote" name="note" required className="field" />
+                      <div className="flex gap-2">
+                        <button name="outcome" value="delivered" className="btn btn-primary" type="submit">It WAS delivered</button>
+                        <button name="outcome" value="not_delivered" className="btn btn-danger" type="submit">It was NOT delivered</button>
+                      </div>
+                    </form>
+                  ) : <p className="muted">Only an owner or admin can reconcile.</p>}
+                </div>
               )}
               {status === "failed" && canDecide && (
                 <form action={replayApproval} className="mt-4"><input type="hidden" name="id" value={String(sel["id"])} /><button className="btn" type="submit">Replay (operator)</button></form>

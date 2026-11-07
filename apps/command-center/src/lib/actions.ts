@@ -2,7 +2,7 @@
 import { redirect } from "next/navigation";
 import { headers } from "next/headers";
 import { revalidatePath } from "next/cache";
-import { ingestMessage, approveAndRun, rejectApproval, seedDemo, MessageInput } from "@aaf/brain";
+import { ingestMessage, approveForExecution, rejectApproval, seedDemo, MessageInput } from "@aaf/brain";
 import { enqueue, requestCancel, replay as replayJob } from "@aaf/jobs";
 import { refreshNetworkRadarConnection } from "@aaf/jobs";
 import { DomainError, newId } from "@aaf/core";
@@ -95,17 +95,21 @@ export async function decideApproval(form: FormData) {
   const decision = String(form.get("decision"));
   const note = String(form.get("note") ?? "").trim() || undefined;
   const confirmHash = String(form.get("confirmHash") ?? "") || undefined;
-  let out: { workspaceId: string } | { error: string };
+  let out: { workspaceId: string; jobId?: string } | { error: string };
   try {
     out = await withApp(async (app) => {
       const user = { id: app.user.id, role: app.role };
-      if (decision === "approve") await approveAndRun(app.deps, app.workspaceId, id, user, { note, confirmHash });
-      else await rejectApproval(app.deps, app.workspaceId, id, user, note);
+      let jobId: string | undefined;
+      if (decision === "approve") {
+        // 1. the DECISION commits on its own. 2. execution is a durable job that records its claim and outcome write-ahead.
+        await approveForExecution(app.deps, app.workspaceId, id, user, { note, confirmHash });
+        jobId = (await enqueue(app.store.db, app.workspaceId, { type: "approval.execute", input: { approvalId: id }, idempotencyKey: `exec:${id}`, createdBy: `user:${app.user.id}` })).jobId;
+      } else await rejectApproval(app.deps, app.workspaceId, id, user, note);
       (await getTelemetry()).event("approval_decided", { decision });
-      return { workspaceId: app.workspaceId };
+      return { workspaceId: app.workspaceId, jobId };
     }, { mutating: true });
-    // wake any job parked on this approval (resume happens in the service role, outside this transaction)
-    await dispatchJobs({ workspaceId: out.workspaceId, jobId: "resume", correlationId: id });
+    // runs the execution job (and resumes any job parked on this approval) in the workspace-pinned service role
+    await dispatchJobs({ workspaceId: out.workspaceId, jobId: out.jobId ?? "resume", correlationId: id });
   } catch (e) {
     out = { error: msg(e) };
   }
@@ -118,7 +122,35 @@ export async function replayApproval(form: FormData) {
   const id = String(form.get("id"));
   let error: string | undefined;
   try {
-    await withApp((app) => app.gateway.replay(app.workspaceId, id, { id: app.user.id, role: app.role }), { mutating: true });
+    const out = await withApp(async (app) => {
+      const n = (await app.store.listReceipts(app.workspaceId, id)).length;
+      await app.gateway.requeue(app.workspaceId, id, { id: app.user.id, role: app.role }); // failed -> approved (audited); NOT unknown_outcome
+      const j = await enqueue(app.store.db, app.workspaceId, { type: "approval.execute", input: { approvalId: id }, idempotencyKey: `exec-replay:${id}:${n}`, createdBy: `user:${app.user.id}` });
+      return { workspaceId: app.workspaceId, jobId: j.jobId };
+    }, { mutating: true });
+    await dispatchJobs({ workspaceId: out.workspaceId, jobId: out.jobId, correlationId: id });
+  } catch (e) {
+    error = msg(e);
+  }
+  if (error) redirect(`/approvals?id=${id}&error=${error}`);
+  revalidatePath("/", "layout");
+  redirect(`/approvals?id=${id}`);
+}
+
+/** A human checked the real system (the sent folder...) and says whether an unknown-outcome action actually happened. */
+export async function reconcileApproval(form: FormData) {
+  const id = String(form.get("id"));
+  const outcome = String(form.get("outcome")) === "delivered" ? "delivered" : "not_delivered";
+  const note = String(form.get("note") ?? "").trim();
+  let error: string | undefined;
+  try {
+    const out = await withApp(async (app) => {
+      await app.gateway.reconcile(app.workspaceId, id, { id: app.user.id, role: app.role }, outcome, note);
+      // delivered: run the (idempotent) completion job so the follow-up task appears, without sending anything
+      const j = outcome === "delivered" ? await enqueue(app.store.db, app.workspaceId, { type: "approval.execute", input: { approvalId: id }, idempotencyKey: `exec-reconciled:${id}`, createdBy: `user:${app.user.id}` }) : undefined;
+      return { workspaceId: app.workspaceId, jobId: j?.jobId };
+    }, { mutating: true });
+    if (out.jobId) await dispatchJobs({ workspaceId: out.workspaceId, jobId: out.jobId, correlationId: id });
   } catch (e) {
     error = msg(e);
   }

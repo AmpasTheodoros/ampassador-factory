@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { z } from "zod";
 import { Db, Store } from "@aaf/database";
 import { DomainError } from "@aaf/core";
-import { ToolGateway, BUILTIN_TOOLS, type ToolDef } from "./index";
+import { ToolGateway, BUILTIN_TOOLS, safeToRetry, type ToolDef } from "./index";
 
 const WS = "aaaaaaaa-0000-4000-8000-000000000001";
 const OWNER = { id: "u1", role: "owner" };
@@ -19,7 +19,7 @@ const mk = (over: Partial<ToolDef> = {}): ToolDef => ({
   inputSchema: z.object({ to: z.string(), n: z.number().default(1) }), outputSchema: z.object({ ok: z.literal(true) }),
   timeoutMs: 200, retry: { max: 3, backoffMs: 1 }, auditFields: ["to"], summarize: (i: any) => `send ${i.to}`,
   async execute(ctx, i: any) {
-    if (failuresLeft > 0) { failuresLeft--; throw new Error("boom"); }
+    if (failuresLeft > 0) { failuresLeft--; throw safeToRetry("connection refused before sending"); }
     sent.push(`${i.to}:${ctx.idempotencyKey}`);
     return { ok: true as const };
   },
@@ -174,14 +174,17 @@ describe("reliability", () => {
     expect((await g.replay(WS, id, OWNER)).ok).toBe(true);
     expect(sent).toEqual([`a@x.com:${id}`]);
   });
-  it("timeout is recorded as failure", async () => {
-    const slow = mk({ timeoutMs: 20, retry: { max: 1, backoffMs: 1 }, async execute() { await new Promise((r) => setTimeout(r, 200)); return { ok: true as const }; } });
+  it("a timeout on a tool that SENDS is an unknown outcome: recorded, not retried", async () => {
+    let calls = 0;
+    const slow = mk({ timeoutMs: 20, retry: { max: 3, backoffMs: 1 }, async execute() { calls++; await new Promise((r) => setTimeout(r, 200)); return { ok: true as const }; } });
     const g = gw([slow]);
     const id = ((await g.invoke({ workspaceId: WS, actor: agent, toolId: "test.send", input: { to: "a" } })) as any).approvalId;
     await g.decide(WS, id, "approve", OWNER);
     const r: any = await g.execute(WS, id);
-    expect(r.ok).toBe(false);
-    expect(r.error).toMatch(/timed out/);
+    expect(r).toMatchObject({ ok: false, unknown: true });
+    expect(r.error).toMatch(/Outcome unknown.*timed out/);
+    expect(calls).toBe(1);
+    expect((await store.getApproval(WS, id))!["status"]).toBe("unknown_outcome");
   });
   it("permanent errors are not retried", async () => {
     let calls = 0;
@@ -208,5 +211,88 @@ describe("reliability", () => {
     const r: any = await g.execute(WS, q.approvalId);
     expect(r.output.delivered).toBe(false);
     expect(r.output.eml).toContain("Subject: Re: hi");
+  });
+});
+
+
+describe("an execution that might have succeeded is never blindly repeated", () => {
+  const approveOne = async (g: ToolGateway) => {
+    const id = ((await g.invoke({ workspaceId: WS, actor: agent, toolId: "test.send", input: { to: "a@x.com" } })) as any).approvalId;
+    await g.decide(WS, id, "approve", OWNER);
+    return id as string;
+  };
+  it("an unclassified error from a sending tool is an unknown outcome (default is the safe side)", async () => {
+    let calls = 0;
+    const g = gw([mk({ async execute() { calls++; throw new Error("socket hang up after write"); } })]);
+    const id = await approveOne(g);
+    expect(await g.execute(WS, id)).toMatchObject({ ok: false, unknown: true });
+    expect(calls).toBe(1);
+  });
+  it("only errors the connector marks safe_to_retry are retried (nothing was sent)", async () => {
+    let calls = 0;
+    const g = gw([mk({ async execute() { calls++; throw safeToRetry("DNS failure before the request left"); } })]);
+    const id = await approveOne(g);
+    expect(await g.execute(WS, id)).toMatchObject({ ok: false, unknown: false });
+    expect(calls).toBe(3);
+    expect((await store.getApproval(WS, id))!["status"]).toBe("failed");
+  });
+  it("tools that neither send nor spend (write_low behind an approval) keep generic retry-with-backoff", async () => {
+    let calls = 0;
+    const g = gw([mk({ riskTier: "write_low", approvalPolicy: "always", async execute() { calls++; if (calls < 3) throw new Error("flaky"); return { ok: true as const }; } })]);
+    const id = await approveOne(g);
+    expect((await g.execute(WS, id)).ok).toBe(true);
+    expect(calls).toBe(3);
+  });
+  it("an unknown outcome cannot be replayed or executed again", async () => {
+    let calls = 0;
+    const g = gw([mk({ async execute() { calls++; throw new Error("timeout-ish"); } })]);
+    const id = await approveOne(g);
+    await g.execute(WS, id);
+    await expect(g.replay(WS, id, OWNER)).rejects.toThrow(/Only failed approvals/);
+    await expect(g.execute(WS, id)).rejects.toThrow(/Cannot execute/);
+    await expect(g.decide(WS, id, "approve", OWNER)).rejects.toThrow();
+    expect(calls).toBe(1);
+  });
+  it("reconcile 'delivered' records success and never sends again; the receipt says it was reconciled by a human", async () => {
+    let calls = 0;
+    const g = gw([mk({ async execute() { calls++; throw new Error("lost connection after send"); } })]);
+    const id = await approveOne(g);
+    await g.execute(WS, id);
+    await expect(g.reconcile(WS, id, VIEWER, "delivered", "saw it")).rejects.toThrow(/Only owner/);
+    await expect(g.reconcile(WS, id, OWNER, "delivered", "  ")).rejects.toThrow(/Say how you checked/);
+    await g.reconcile(WS, id, OWNER, "delivered", "found it in Sent folder");
+    expect((await store.getApproval(WS, id))!["status"]).toBe("succeeded");
+    const rc = await store.listReceipts(WS, id);
+    expect(rc[rc.length - 1]).toMatchObject({ ok: true, executedBy: "user:u1" });
+    expect((rc[rc.length - 1]!["result"] as any).reconciled).toBe(true);
+    await expect(g.execute(WS, id)).rejects.toThrow();
+    await expect(g.replay(WS, id, OWNER)).rejects.toThrow();
+    expect(calls).toBe(1);
+    expect((await store.listAudit(WS, "approval", id)).map((a) => a["action"])).toEqual(expect.arrayContaining(["approval.outcome_unknown", "approval.reconciled_delivered"]));
+  });
+  it("reconcile 'not_delivered' unlocks an explicit operator replay, which then sends exactly once more", async () => {
+    let calls = 0;
+    const g = gw([mk({ async execute(ctx) { calls++; if (calls === 1) throw new Error("timeout-ish"); sent.push(ctx.idempotencyKey); return { ok: true as const }; } })]);
+    const id = await approveOne(g);
+    await g.execute(WS, id);
+    await g.reconcile(WS, id, OWNER, "not_delivered", "nothing in Sent, recipient confirms nothing arrived");
+    expect((await store.getApproval(WS, id))!["status"]).toBe("failed");
+    expect((await g.replay(WS, id, OWNER)).ok).toBe(true);
+    expect(sent).toEqual([id]);
+    expect(calls).toBe(2);
+  });
+  it("a worker that died mid-execution leaves an 'executing' approval that becomes unknown_outcome, not a retry", async () => {
+    let now = Date.now();
+    let calls = 0;
+    const g = gw([mk({ async execute() { calls++; return { ok: true as const }; } })], { now: () => now, executingTimeoutMs: 60_000 });
+    const id = await approveOne(g);
+    await db.query(`update approvals set status='executing', executing_at=$2 where id=$1`, [id, new Date(now).toISOString()]); // claimed, then the worker vanished
+    expect(await g.expireStale(WS)).toBe(0);                       // still within the window
+    now += 61_000;
+    expect(await g.expireStale(WS)).toBe(1);
+    expect((await store.getApproval(WS, id))!["status"]).toBe("unknown_outcome");
+    await expect(g.execute(WS, id)).rejects.toThrow(/Cannot execute/);
+    expect(calls).toBe(0);
+    expect((await store.listAudit(WS, "approval", id)).some((a) => a["action"] === "approval.outcome_unknown")).toBe(true);
   });
 });

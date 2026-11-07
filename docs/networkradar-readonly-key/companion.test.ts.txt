@@ -1,0 +1,59 @@
+import http from "node:http";
+import type { AddressInfo } from "node:net";
+import { createHash } from "node:crypto";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+
+import { handleMcpHttpRequest } from "@/lib/mcp/http";
+// The Company OS adapter, imported straight from its repo: REAL patched NetworkRadar server code <-> REAL adapter, over real HTTP.
+import { NetworkRadarAdapter } from "C:/Users/ampas/Documents/GitHub/ampassador-factory/packages/integrations/src/networkradar";
+
+const RO = "nrro_" + "k".repeat(43);
+const FULL = "legacy-full-access-key-for-this-test";
+let server: http.Server;
+let url: string;
+
+beforeAll(async () => {
+  Object.assign(process.env, { NODE_ENV: "production", MCP_OWNER_ID: "owner_test", MCP_API_KEY: FULL, MCP_READONLY_KEYS: `ci:${createHash("sha256").update(RO).digest("hex")}`, DATABASE_URL: "postgresql://test:test@localhost:5432/test" });
+  server = http.createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const c of req) chunks.push(c as Buffer);
+    const r = new Request(`http://localhost${req.url}`, { method: req.method, headers: req.headers as Record<string, string>, body: ["GET", "HEAD"].includes(req.method ?? "") ? undefined : Buffer.concat(chunks) });
+    const out = await handleMcpHttpRequest(r);
+    res.writeHead(out.status, Object.fromEntries(out.headers));
+    res.end(Buffer.from(await out.arrayBuffer()));
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`;
+});
+afterAll(async () => { await new Promise((r) => server.close(r)); });
+
+describe("Company OS adapter <-> real patched NetworkRadar handler", () => {
+  it("read-only key: health is connected (all five tools, all readOnlyHint, nothing else visible)", async () => {
+    const h = await new NetworkRadarAdapter({ url, apiKey: RO }).health();
+    expect(h).toMatchObject({ status: "connected" });
+  });
+  it("the legacy FULL key is refused by the adapter at construction (not nrro_)", () => {
+    expect(() => new NetworkRadarAdapter({ url, apiKey: FULL })).toThrow(/READ-ONLY key/);
+  });
+  it("if the full key were forced through (strict off), the server really does expose far more than five tools: this is why the new key exists", async () => {
+    const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+    const { StreamableHTTPClientTransport } = await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
+    const sizes: Record<string, number> = {};
+    for (const [label, key] of [["readonly", RO], ["full", FULL]] as const) {
+      const c = new Client({ name: "t", version: "0" }, { capabilities: {} });
+      await c.connect(new StreamableHTTPClientTransport(new URL(url), { requestInit: { headers: { Authorization: `Bearer ${key}` } } }));
+      sizes[label] = (await c.listTools()).tools.length;
+      await c.close();
+    }
+    expect(sizes["readonly"]).toBe(5);
+    expect(sizes["full"]).toBeGreaterThan(40);
+  });
+  it("a mutating call with the read-only key is refused by the server with 403, whatever the client does", async () => {
+    const res = await fetch(url, { method: "POST", headers: { authorization: `Bearer ${RO}`, "content-type": "application/json", accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "send_email", arguments: { to: "a@b.co", subject: "s", body: "b" } } }) });
+    expect(res.status).toBe(403);
+  });
+  it("a bad read-only key is a clean 'unauthorized' for the adapter", async () => {
+    const h = await new NetworkRadarAdapter({ url, apiKey: "nrro_" + "x".repeat(43) }).health();
+    expect(h).toMatchObject({ status: "blocked", code: "unauthorized" });
+  });
+});

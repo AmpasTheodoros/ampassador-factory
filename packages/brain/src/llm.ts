@@ -1,6 +1,7 @@
 import { DomainError, newId, type DataPolicy } from "@aaf/core";
 import type { Store } from "@aaf/database";
 import type { ZodType } from "zod";
+import type { BudgetLedger, CostKind } from "./budget";
 
 export type AiTask = "classify" | "draft";
 
@@ -23,6 +24,8 @@ export interface LlmProvider {
   /** Tasks this provider is preferred for; empty/undefined = any. */
   tasks?: AiTask[];
   pricing?: Pricing;
+  /** How many times one logical call may be billed (1 + SDK retries). The reservation covers all of them. */
+  maxAttempts?: number;
   complete(req: LlmRequest): Promise<LlmResult>;
   structured?<T>(req: LlmRequest, schema: ZodType<T>): Promise<StructuredResult<T>>;
 }
@@ -47,6 +50,8 @@ export interface CallEvent {
 export interface CostRow { provider: string; model: string; tokensIn: number; tokensOut: number; costEur: number }
 
 export interface RouterOptions {
+  /** Atomic reserve/settle budget (preferred). When absent the legacy read-then-call guard + deferCosts is used. */
+  ledger?: BudgetLedger;
   /** Hold cost rows in memory so they survive a rolled-back transaction; the host must call flushCosts() afterwards in its own transaction. */
   deferCosts?: boolean;
   /** Called after every model call (success or failure). Must not receive prompt text. */
@@ -109,6 +114,41 @@ export class ModelRouter {
     if (p.location === "cloud" && spend + worst > budget) throw new DomainError("budget_exceeded", `This call could exceed the monthly AI budget (spent ${spend.toFixed(2)}, worst case +${worst.toFixed(4)} EUR)`);
   }
 
+  /** Upper bound of what one logical call can cost: all attempts, full input, full output budget. */
+  worstCase(p: LlmProvider, inputChars: number, maxOut: number): number {
+    const price = p.pricing ?? DEFAULT_PRICE;
+    const one = (Math.ceil(inputChars / 3) / 1e6) * price.eurPerMIn + (maxOut / 1e6) * price.eurPerMOut;
+    return Math.round(one * (p.maxAttempts ?? 1) * 1e8) / 1e8;
+  }
+
+  /** Reserve (ledger) or check (legacy). Returns the reservation id and amount, or undefined on the legacy path. */
+  private async admit(ws: string, w: Record<string, unknown>, p: LlmProvider, inputChars: number, maxOut: number): Promise<{ id: string; amount: number } | undefined> {
+    if (!this.opts.ledger) {
+      await this.guardBudget(ws, w["monthlyBudgetEur"] as number, p, inputChars, maxOut);
+      return undefined;
+    }
+    const amount = p.location === "local" ? 0 : this.worstCase(p, inputChars, maxOut);
+    const id = newId();
+    if (!(await this.opts.ledger.reserve(ws, id, amount))) throw new DomainError("budget_exceeded", `The monthly AI budget cannot cover this call (worst case ${amount.toFixed(4)} EUR)`);
+    return { id, amount };
+  }
+
+  /** Outcomes where inference may have happened and been billed are charged at the reserve; clear pre-inference rejections are released. */
+  private async settleFailure(ws: string, p: LlmProvider, resv: { id: string; amount: number } | undefined, e: unknown) {
+    if (!resv || !this.opts.ledger) return;
+    const code = (e as { code?: string })?.code;
+    if (code === "llm_timeout" || code === "llm_invalid_output") {
+      await this.opts.ledger.settle(ws, resv.id, { provider: p.id, model: p.modelLabel, tokensIn: 0, tokensOut: 0, costEur: resv.amount, kind: "unconfirmed_charge" });
+    } else {
+      await this.opts.ledger.release(ws, resv.id);
+    }
+  }
+  private async settleSuccess(ws: string, p: LlmProvider, resv: { id: string; amount: number } | undefined, r: { tokensIn: number; tokensOut: number; costEur: number }) {
+    if (!resv || !this.opts.ledger) return;
+    const kind: CostKind = p.pricing && !p.pricing.estimated ? "usage_estimate" : "usage_estimate_unpriced";
+    await this.opts.ledger.settle(ws, resv.id, { provider: p.id, model: p.modelLabel, tokensIn: r.tokensIn, tokensOut: r.tokensOut, costEur: r.costEur, kind });
+  }
+
   private prep(req: LlmRequest, redacted: boolean): LlmRequest {
     const max = this.opts.maxInputChars ?? 8000;
     const user = req.user.length > max ? req.user.slice(0, max) : req.user;
@@ -116,7 +156,7 @@ export class ModelRouter {
   }
 
   private async record(ws: string, task: string, p: LlmProvider, redacted: boolean, started: number, r: { tokensIn: number; tokensOut: number; costEur: number } | null, err?: unknown) {
-    if (r) {
+    if (r && !this.opts.ledger) {
       if (this.opts.deferCosts) { this.wsForFlush = ws; this.pending.push({ provider: p.id, model: p.modelLabel, tokensIn: r.tokensIn, tokensOut: r.tokensOut, costEur: r.costEur }); }
       else await this.store.addCost(ws, { provider: p.id, model: p.modelLabel, tokensIn: r.tokensIn, tokensOut: r.tokensOut, costEur: r.costEur, runId: newId() });
     }
@@ -125,14 +165,16 @@ export class ModelRouter {
 
   async complete(ws: string, routing: Routing, req: LlmRequest, task = "text"): Promise<LlmResult & { providerId: string; redacted: boolean }> {
     const { w, policy, p } = await this.pick(ws, task, routing);
-    await this.guardBudget(ws, w["monthlyBudgetEur"] as number, p, req.system.length + req.user.length, req.maxOutputTokens ?? 1024);
+    const resv = await this.admit(ws, w, p, req.system.length + req.user.length, req.maxOutputTokens ?? 1024);
     const redacted = p.location === "cloud" && policy !== "cloud_allowed";
     const t = Date.now();
     try {
       const r = await p.complete(this.prep(req, redacted));
+      await this.settleSuccess(ws, p, resv, r);
       await this.record(ws, task, p, redacted, t, r);
       return { ...r, providerId: p.id, redacted };
     } catch (e) {
+      await this.settleFailure(ws, p, resv, e);
       await this.record(ws, task, p, redacted, t, null, e);
       throw e;
     }
@@ -141,17 +183,20 @@ export class ModelRouter {
   async structured<T>(ws: string, task: AiTask, routing: Routing, req: LlmRequest, schema: ZodType<T>): Promise<StructuredResult<T> & { providerId: string; modelLabel: string; location: "cloud" | "local"; redacted: boolean; priceEstimated: boolean }> {
     const { w, policy, p } = await this.pick(ws, task, routing);
     if (!p.structured) throw new DomainError("no_structured", `Provider ${p.id} has no structured output`);
-    await this.guardBudget(ws, w["monthlyBudgetEur"] as number, p, req.system.length + req.user.length, req.maxOutputTokens ?? 400);
+    const resv = await this.admit(ws, w, p, req.system.length + req.user.length, req.maxOutputTokens ?? 400);
     const redacted = p.location === "cloud" && policy !== "cloud_allowed";
     const t = Date.now();
+    let r;
     try {
-      const r = await p.structured(this.prep(req, redacted), schema);
-      await this.record(ws, task, p, redacted, t, r);
-      return { ...r, providerId: p.id, modelLabel: p.modelLabel, location: p.location, redacted, priceEstimated: p.pricing?.estimated ?? true };
+      r = await p.structured(this.prep(req, redacted), schema);
     } catch (e) {
+      await this.settleFailure(ws, p, resv, e);
       await this.record(ws, task, p, redacted, t, null, e);
       throw e;
     }
+    await this.settleSuccess(ws, p, resv, r);
+    await this.record(ws, task, p, redacted, t, r);
+    return { ...r, providerId: p.id, modelLabel: p.modelLabel, location: p.location, redacted, priceEstimated: p.pricing?.estimated ?? true };
   }
 }
 

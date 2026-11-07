@@ -68,7 +68,7 @@ export async function withApp<T>(fn: (app: App) => Promise<T>, opts: WithAppOpti
   }
   const env = getEnv();
   const tel = await getTelemetry();
-  const { database } = await getDb();
+  const { database, ledger: ledgerDb } = await getDb();
   let flush: (() => Promise<void>) | undefined;
   try {
     return await database.run({ kind: "user", userId: user.id }, async (q: Queryable) => {
@@ -81,7 +81,7 @@ export async function withApp<T>(fn: (app: App) => Promise<T>, opts: WithAppOpti
         m = { id, role: "owner" };
       }
       const ws = m.id;
-      const { deps, router } = buildBrainDeps(store, runtimeEnv(), networkRadarFromEnv(runtimeEnv()), (e) => tel.modelCall({ ...e, model: e.modelLabel }));
+      const { deps, router } = buildBrainDeps(store, runtimeEnv(), networkRadarFromEnv(runtimeEnv()), (e) => tel.modelCall({ ...e, model: e.modelLabel }), { database, ledger: ledgerDb });
       flush = async () => {
         if (router.pendingCosts().length === 0) return;
         await database.run({ kind: "service", workspaceId: ws, reason: "cost-flush" }, (sq) => router.flushCosts(new Store(sq)).then(() => undefined));

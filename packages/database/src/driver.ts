@@ -110,13 +110,15 @@ export class PgDatabase implements Database {
     }
   }
   async assertLeastPrivilege(): Promise<void> {
-    const r = await this.pool.query<{ rolsuper: boolean; rolbypassrls: boolean; owns: number; u: string }>(
-      `select r.rolsuper, r.rolbypassrls, current_user as u,
+    const r = await this.pool.query<{ rolsuper: boolean; rolbypassrls: boolean; rolinherit: boolean; owns: number; u: string }>(
+      `select r.rolsuper, r.rolbypassrls, r.rolinherit, current_user as u,
               (select count(*)::int from pg_tables where schemaname = 'public' and tableowner = current_user) as owns
        from pg_roles r where r.rolname = current_user`,
     );
     const row = r.rows[0];
     if (!row) throw new DomainError("privilege_check", "cannot read connection role");
+    if (row.rolinherit)
+      throw new DomainError("over_privileged", `Database role "${row.u}" inherits the privileges of the roles it can SET. Make it NOINHERIT (and re-grant its memberships) so that a statement without an explicit role switch fails closed.`);
     if (row.rolsuper || row.rolbypassrls || row.owns > 0)
       throw new DomainError("over_privileged", `Database role "${row.u}" is a superuser, can bypass RLS, or owns tables. Connect as a least-privileged login role (aaf_app).`);
   }

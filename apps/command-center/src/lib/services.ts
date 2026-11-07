@@ -22,12 +22,12 @@ export function runtimeEnv(): RuntimeEnv {
 }
 
 async function localDispatcher(): Promise<LocalDispatcher<import("@aaf/jobs").BrainServices>> {
-  const { database } = await getDb();
+  const { database, ledger } = await getDb();
   const tel = await getTelemetry();
   const env = runtimeEnv();
   return new LocalDispatcher(database, brainHandlers, {
     workerId: `local-${process.pid}`,
-    buildServices: makeBuildServices(database, env, { onCall: (e) => tel.modelCall({ ...e, model: e.modelLabel, workspaceId: e.workspaceId }) }),
+    buildServices: makeBuildServices(database, env, { ledger, onCall: (e) => tel.modelCall({ ...e, model: e.modelLabel, workspaceId: e.workspaceId }) }),
   });
 }
 

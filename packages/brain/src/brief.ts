@@ -49,6 +49,7 @@ export async function generateBrief(deps: BrainDeps, ws: string): Promise<Brief>
   const approvals = await store.listApprovals(ws);
   const awaiting = approvals.filter((a) => a["status"] === "awaiting_approval");
   const failed = approvals.filter((a) => a["status"] === "failed");
+  const unknown = approvals.filter((a) => a["status"] === "unknown_outcome");
   const tasks = await store.listTasks(ws, "open");
   const runs = await store.listRuns(ws, 30);
   const conns = await store.listConnections(ws);
@@ -97,6 +98,8 @@ export async function generateBrief(deps: BrainDeps, ws: string): Promise<Brief>
   }
 
   const blockers: BriefItem[] = [];
+  for (const a of unknown)
+    blockers.push({ key: `unknown:${s(a["id"])}`, kind: "blocker", title: `Outcome unknown, check whether it went out: ${s(a["summary"])}`, score: 90, why: ["The send was attempted but its result was never confirmed. It will not be retried until you reconcile it."], nextAction: { label: "Reconcile", href: `/approvals?id=${s(a["id"])}` }, provenance: [{ source: "approvals", recordId: s(a["id"]), retrievedAt: nowIso, kind: "record" }], isDemo: false });
   for (const a of failed)
     blockers.push({ key: `failed:${s(a["id"])}`, kind: "blocker", title: `Action failed and needs an operator: ${s(a["summary"])}`, score: 80, why: ["Exhausted retries; see the receipts"], nextAction: { label: "Open automations", href: `/automations` }, provenance: [{ source: "approvals", recordId: s(a["id"]), retrievedAt: nowIso, kind: "record" }], isDemo: false });
   for (const r of runs.filter((r) => r["status"] === "failed").slice(0, 3))

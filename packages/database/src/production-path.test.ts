@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { newId, payloadHash } from "@aaf/core";
 import { Store } from "./store";
 import { openTestHarness, openWireHarness, type TestHarness } from "./testing";
-import { PgDatabase, runMigrations } from "./index";
+import { Db, PgDatabase, runMigrations } from "./index";
 
 const UA = "11111111-0000-4000-8000-00000000000a";
 const UB = "22222222-0000-4000-8000-00000000000b";
@@ -10,7 +10,7 @@ const UMEMBER = "33333333-0000-4000-8000-00000000000c";
 const UVIEWER = "44444444-0000-4000-8000-00000000000d";
 
 const suites: [string, () => Promise<TestHarness>][] = [
-  ["in-process (Database.run + SET LOCAL ROLE)", openTestHarness],
+  [process.env.AAF_TEST_BACKEND === "realpg" ? "REAL PostgreSQL 17 as aaf_app login role" : "in-process (Database.run + SET LOCAL ROLE)", openTestHarness],
   ["wire protocol (node-postgres PgDatabase)", () => openWireHarness(54411)],
 ];
 
@@ -134,12 +134,15 @@ for (const [label, open] of suites) {
 
 describe("migrations", () => {
   it("are reproducible: re-running applies nothing; a modified applied file is refused", async () => {
-    const h = await openTestHarness();
-    const admin = { exec: async (s: string) => void (await h.admin.pg.exec(s)), rows: async (s: string, p?: unknown[]) => (await h.admin.pg.query(s, p)).rows as Record<string, unknown>[] };
+    const h = { close: async () => {} };
+    const embedded = await Db.open();
+    const pgl = embedded.pg;
+    const admin = { exec: async (s: string) => void (await pgl.exec(s)), rows: async (s: string, p?: unknown[]) => (await pgl.query(s, p)).rows as Record<string, unknown>[] };
     expect((await runMigrations(admin)).applied).toEqual([]);
-    await h.admin.pg.query(`update _migrations set checksum='tampered' where name like '0001%'`);
+    await pgl.query(`update _migrations set checksum='tampered' where name like '0001%'`);
     await expect(runMigrations(admin)).rejects.toThrow(/modified after being applied/);
-    await h.close();
+    await embedded.close();
+    void h;
   });
 });
 

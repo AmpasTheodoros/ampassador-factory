@@ -51,12 +51,23 @@ export type InvokeResult =
   | { status: "queued_for_approval"; approvalId: string; created: boolean }
   | { status: "denied"; reason: string; code: "unknown_tool" | "invalid_input" | "missing_scope" | "needs_connection" | "rate_limited" | "budget_exceeded" | "approval_required" };
 
+/**
+ * Runs `fn` in its OWN committed transaction (a different pooled connection, workspace-pinned service role).
+ * Execution of an approval uses it for the claim, the receipts and the final state, so that those records are durable
+ * even if the surrounding request/job transaction later rolls back. An external effect cannot be rolled back; its record must not be either.
+ */
+export type Autonomous = <T>(ws: string, fn: (store: Store) => Promise<T>) => Promise<T>;
+
 export interface GatewayOptions {
+  /** Write-ahead recording for executions. Without it (embedded dev database) everything shares the caller's transaction. */
+  autonomous?: Autonomous;
   /** Approval validity window. */
   approvalTtlMs?: number;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
   services?: Services;
+  /** An approval stuck in 'executing' longer than this is assumed to have lost its worker and becomes 'unknown_outcome'. */
+  executingTimeoutMs?: number;
 }
 
 const INTERNAL_SCOPES = ["tasks:write", "drafts:write", "exports:write", "inbox:read", "network:read_local"];
@@ -169,12 +180,19 @@ export class ToolGateway {
   // ------------------------------------------------------------------ approvals
 
   async expireStale(ws: string): Promise<number> {
+    const nowIso = new Date(this.now()).toISOString();
     const rows = await this.store.db.query<{ id: string }>(
       `update approvals set status='expired' where workspace_id=$1 and status in ('awaiting_approval','approved') and expires_at < $2::timestamptz returning id`,
-      [ws, new Date(this.now()).toISOString()],
+      [ws, nowIso],
     );
     for (const r of rows) await this.store.audit(ws, "system", "approval.expired", "approval", r.id);
-    return rows.length;
+    // an execution whose worker died mid-flight MAY have had its external effect: never retry it blindly
+    const stuck = await this.store.db.query<{ id: string }>(
+      `update approvals set status='unknown_outcome' where workspace_id=$1 and status='executing' and executing_at < $2::timestamptz - make_interval(secs => $3) returning id`,
+      [ws, nowIso, (this.opts.executingTimeoutMs ?? 5 * 60_000) / 1000],
+    );
+    for (const r of stuck) await this.store.audit(ws, "system", "approval.outcome_unknown", "approval", r.id, { reason: "worker lost while executing" });
+    return rows.length + stuck.length;
   }
 
   /** Human decision. Only owner/admin; financial tier needs the payload hash echoed back as second confirmation. */
@@ -195,28 +213,39 @@ export class ToolGateway {
     await this.store.audit(ws, `user:${user.id}`, `approval.${decision === "approve" ? "approved" : "rejected"}`, "approval", approvalId, { note: opts.note ?? null, hash: a["payloadHash"] });
   }
 
-  /** Execute an approved action. Revalidates hash, expiry, scopes and input schema. Bounded retries with exponential backoff. */
+  private rec<T>(ws: string, fn: (store: Store) => Promise<T>): Promise<T> {
+    return this.opts.autonomous ? this.opts.autonomous(ws, fn) : fn(this.store);
+  }
+
+  /**
+   * Execute an approved action. Revalidates hash, expiry, scopes and input schema.
+   * Write-ahead: the claim (approved -> executing) is committed BEFORE the connector is called, and the outcome is
+   * committed right after, both independent of the caller's transaction. Failures that may have had an effect are
+   * never retried (see unknown_outcome).
+   */
   async execute(ws: string, approvalId: string, executor: Actor = { id: "executor", kind: "system" }) {
     await this.expireStale(ws);
-    const a = await this.store.getApproval(ws, approvalId);
+    const a = await this.rec(ws, (s) => s.getApproval(ws, approvalId));
     if (!a) throw new DomainError("not_found", "Approval not found");
-    const claimed = await this.store.transitionApproval(ws, approvalId, "approved", "executing");
+    const claimed = await this.rec(ws, (s) => s.transitionApproval(ws, approvalId, "approved", "executing"));
     if (!claimed) throw new DomainError("not_approved", `Cannot execute: approval is ${a["status"]}`);
     const actorStr = `${executor.kind}:${executor.id}`;
     const fail = async (msg: string, attempt: number) => {
-      await this.store.insertReceipt(ws, approvalId, attempt, false, undefined, msg, actorStr);
-      await this.store.transitionApproval(ws, approvalId, "executing", "failed");
-      await this.store.audit(ws, actorStr, "approval.failed", "approval", approvalId, { error: msg });
-      return { ok: false as const, error: msg };
+      await this.rec(ws, async (s) => {
+        await s.insertReceipt(ws, approvalId, attempt, false, undefined, msg, actorStr);
+        await s.transitionApproval(ws, approvalId, "executing", "failed");
+        await s.audit(ws, actorStr, "approval.failed", "approval", approvalId, { error: msg });
+      });
+      return { ok: false as const, unknown: false as const, error: msg };
     };
-    const prev = await this.store.listReceipts(ws, approvalId);
+    const prev = await this.rec(ws, (s) => s.listReceipts(ws, approvalId));
     let attempt = prev.length;
 
     const tool = this.tools.get(a["toolId"] as string);
     if (!tool) return fail(`Unknown tool ${a["toolId"]}`, ++attempt);
     // revalidation: payload must still hash to what the human approved
     if (payloadHash(a["payload"]) !== a["payloadHash"]) {
-      await this.store.audit(ws, "system", "approval.tamper_detected", "approval", approvalId);
+      await this.rec(ws, (s) => s.audit(ws, "system", "approval.tamper_detected", "approval", approvalId));
       return fail("Payload hash mismatch: payload changed after approval", ++attempt);
     }
     const parsed = tool.inputSchema.safeParse(a["payload"]);
@@ -224,35 +253,74 @@ export class ToolGateway {
     const pre = await this.precheck(ws, tool);
     if (pre && pre.status === "denied") return fail(`Authorization revalidation failed: ${pre.reason}`, ++attempt);
 
+    const external = tool.riskTier === "external_communication" || tool.riskTier === "financial_or_irreversible";
     let lastErr = "";
     for (let i = 0; i < Math.max(1, tool.retry.max); i++) {
       attempt++;
       try {
         const out = await this.runWithTimeout(tool, { workspaceId: ws, store: this.store, actor: executor, idempotencyKey: approvalId, services: this.opts.services ?? {} }, parsed.data);
-        await this.store.insertReceipt(ws, approvalId, attempt, true, out, null, actorStr);
-        await this.store.transitionApproval(ws, approvalId, "executing", "succeeded");
-        await this.store.audit(ws, actorStr, "approval.executed", "approval", approvalId, { toolId: tool.toolId, attempt, ...pick(parsed.data, tool.auditFields) });
-        return { ok: true as const, output: out };
+        const n = attempt;
+        await this.rec(ws, async (s) => {
+          await s.insertReceipt(ws, approvalId, n, true, out, null, actorStr);
+          await s.transitionApproval(ws, approvalId, "executing", "succeeded");
+          await s.audit(ws, actorStr, "approval.executed", "approval", approvalId, { toolId: tool.toolId, attempt: n, ...pick(parsed.data, tool.auditFields) });
+        });
+        return { ok: true as const, unknown: false as const, output: out };
       } catch (e) {
         lastErr = errMsg(e);
-        const permanent = e instanceof DomainError && e.code.startsWith("permanent");
+        const permanent = e instanceof DomainError && e.code.startsWith("permanent"); // definitely nothing happened
+        const safeToRetry = e instanceof DomainError && e.code.startsWith("safe_to_retry"); // definitely nothing happened
+        if (external && !permanent && !safeToRetry) {
+          // timeout / crash / unclassified error from a tool that sends or spends: the effect MAY have happened.
+          const n = attempt;
+          await this.rec(ws, async (s) => {
+            await s.insertReceipt(ws, approvalId, n, false, undefined, `outcome unknown: ${lastErr}`, actorStr);
+            await s.transitionApproval(ws, approvalId, "executing", "unknown_outcome");
+            await s.audit(ws, actorStr, "approval.outcome_unknown", "approval", approvalId, { error: lastErr, attempt: n });
+          });
+          return { ok: false as const, unknown: true as const, error: `Outcome unknown (not retried): ${lastErr}` };
+        }
         if (permanent || i === tool.retry.max - 1) break;
-        await this.store.insertReceipt(ws, approvalId, attempt, false, undefined, lastErr, actorStr);
+        const n = attempt;
+        await this.rec(ws, (s) => s.insertReceipt(ws, approvalId, n, false, undefined, lastErr, actorStr));
         await this.sleep(tool.retry.backoffMs * 2 ** i);
       }
     }
     return fail(lastErr, attempt);
   }
 
+  /**
+   * Operator resolution of an 'unknown_outcome' approval, after checking the real system (the mailbox, the bank...).
+   * 'delivered' => the effect did happen: record success, never send again. 'not_delivered' => it did not: becomes 'failed' so it can be replayed.
+   */
+  async reconcile(ws: string, approvalId: string, user: { id: string; role: string }, outcome: "delivered" | "not_delivered", note: string) {
+    if (!["owner", "admin"].includes(user.role)) throw new DomainError("forbidden", "Only owner/admin may reconcile");
+    if (!note.trim()) throw new DomainError("note_required", "Say how you checked (e.g. 'found it in Sent')");
+    const to = outcome === "delivered" ? "succeeded" : "failed";
+    const ok = await this.store.transitionApproval(ws, approvalId, "unknown_outcome", to, { decidedBy: user.id, note });
+    if (!ok) throw new DomainError("bad_state", "Only approvals with an unknown outcome can be reconciled");
+    const attempt = (await this.store.listReceipts(ws, approvalId)).length + 1;
+    await this.store.insertReceipt(ws, approvalId, attempt, outcome === "delivered", { reconciled: true, outcome, note }, outcome === "delivered" ? null : "reconciled as not delivered", `user:${user.id}`);
+    await this.store.audit(ws, `user:${user.id}`, `approval.reconciled_${outcome}`, "approval", approvalId, { note });
+  }
+
   /** Operator replay of a dead-lettered (failed) approval. Re-enters via "approved"; idempotencyKey stays the approval id. */
   async replay(ws: string, approvalId: string, user: { id: string; role: string }) {
+    await this.requeue(ws, approvalId, user);
+    return this.execute(ws, approvalId, { id: user.id, kind: "user" });
+  }
+
+  /** Decision half of a replay: failed -> approved (audited). Execution then happens in a durable job. */
+  async requeue(ws: string, approvalId: string, user: { id: string; role: string }) {
     if (!["owner", "admin"].includes(user.role)) throw new DomainError("forbidden", "Only owner/admin may replay");
     const ok = await this.store.transitionApproval(ws, approvalId, "failed", "approved", { decidedBy: user.id, note: "replay" });
     if (!ok) throw new DomainError("bad_state", "Only failed approvals can be replayed");
     await this.store.audit(ws, `user:${user.id}`, "approval.replayed", "approval", approvalId);
-    return this.execute(ws, approvalId, { id: user.id, kind: "user" });
   }
 }
+
+/** Throw this from a connector when nothing was sent/charged (e.g. DNS failure before the request left), so the gateway may retry. */
+export const safeToRetry = (message: string) => new DomainError("safe_to_retry", message);
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 function pick(o: unknown, keys: string[]) {

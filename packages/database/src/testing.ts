@@ -1,19 +1,30 @@
 import { Db } from "./db";
+import type { AdminHandle } from "./live";
 import { PgDatabase, PgliteDatabase, type Database } from "./driver";
+import type { Queryable } from "./db";
 
 export interface TestHarness {
   /** Privileged owner handle: fixtures and negative tests only. Never pass this to request-handling code. */
-  admin: Db;
+  admin: AdminHandle & Queryable;
+  /** "embedded" (PGlite) or "realpg" (a real PostgreSQL server reached as the least-privileged aaf_app login role). */
+  backend: "embedded" | "realpg";
   /** The same interface production uses. */
   database: Database;
+  /** Real-Postgres harness only: dedicated pool for autonomous ledger transactions. */
+  ledgerDatabase?: Database;
   close(): Promise<void>;
 }
 
 /** In-process embedded Postgres, request path = Database.run (SET LOCAL ROLE per transaction). */
 export async function openTestHarness(): Promise<TestHarness> {
+  if (process.env.AAF_TEST_BACKEND === "realpg") {
+    const { openRealPgHarness } = await import("./live");
+    const h = await openRealPgHarness();
+    return { admin: h.admin, database: h.database, ledgerDatabase: h.ledgerDatabase, backend: "realpg", close: h.close };
+  }
   const admin = await Db.open();
   const database = new PgliteDatabase(admin);
-  return { admin, database, close: () => admin.close() };
+  return { admin, database, backend: "embedded", close: () => admin.close() };
 }
 
 /**
@@ -30,6 +41,7 @@ export async function openWireHarness(port: number): Promise<TestHarness> {
   return {
     admin,
     database,
+    backend: "embedded",
     close: async () => {
       await database.close();
       await server.stop();

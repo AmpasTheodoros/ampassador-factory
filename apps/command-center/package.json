@@ -8,7 +8,8 @@
     "start": "next start",
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsc -p .",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "e2e:realpg": "tsx e2e/run-realpg.mts"
   },
   "dependencies": {
     "@aaf/brain": "workspace:*",
@@ -34,6 +35,7 @@
     "@tailwindcss/postcss": "^4.1.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
-    "tailwindcss": "^4.1.0"
+    "tailwindcss": "^4.1.0",
+    "tsx": "^4.23.15"
   }
 }

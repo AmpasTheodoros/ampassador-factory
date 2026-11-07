@@ -5,6 +5,8 @@ import { LOCAL_AUTH_SQL, seedDevUser } from "./auth/local";
 
 export interface DbHandle {
   database: Database;
+  /** Dedicated pool for budget-ledger transactions (pooled Postgres only). */
+  ledger?: Database;
   /** Present only for the embedded database (dev/e2e). Never used for request handling. */
   embedded?: Db;
 }
@@ -20,8 +22,8 @@ async function open(): Promise<DbHandle> {
   if (env.DATABASE_URL) {
     const database = new PgDatabase({ connectionString: env.DATABASE_URL, max: env.DATABASE_POOL_MAX });
     // Refuse to serve if the connection role could bypass RLS (superuser, BYPASSRLS, or table owner).
-    if (isProd(env)) await database.assertLeastPrivilege();
-    return { database };
+    if (isProd(env) || env.AAF_RUNTIME_MODE === "e2e") await database.assertLeastPrivilege(); // the e2e run against a real Postgres exercises the guard too
+    return { database, ledger: new PgDatabase({ connectionString: env.DATABASE_URL, max: env.DATABASE_LEDGER_POOL_MAX }) };
   }
   if (isProd(env)) throw new Error("DATABASE_URL is required in production");
   const embedded = await Db.open({ dataDir: env.AAF_DATA_DIR === ":memory:" ? undefined : env.AAF_DATA_DIR });

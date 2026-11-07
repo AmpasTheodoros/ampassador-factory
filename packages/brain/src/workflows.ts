@@ -136,25 +136,51 @@ export async function triageInboxItem(deps: BrainDeps, ws: string, inboxItemId: 
   }
 }
 
-/** W1 last mile: human approval -> execution -> receipt -> follow-up task -> inbox closed. */
+/** One follow-up task per approval, ever (idempotent on source_ref), created only after an outcome nobody doubts. */
+export async function ensureFollowUpTask(deps: BrainDeps, ws: string, approvalId: string, actor: { id: string }) {
+  const { store, gateway } = deps;
+  const existing = await store.db.query<{ id: string }>(`select id from tasks where workspace_id=$1 and source_ref=$2`, [ws, `approval:${approvalId}`]);
+  if (existing[0]) return existing[0].id;
+  const a = await store.getApproval(ws, approvalId);
+  if (!a) throw new DomainError("not_found", "Approval not found");
+  const receipts = await store.listReceipts(ws, approvalId);
+  const okReceipt = receipts.find((r) => r["ok"]);
+  const delivered = (okReceipt?.["result"] as { delivered?: boolean } | undefined)?.delivered;
+  const ctx = a["sourceContext"] as { intent?: string };
+  const payload = a["payload"] as { to: string; subject: string };
+  const days = FOLLOW_UP_DAYS[ctx.intent ?? "unknown"] ?? 5;
+  const due = new Date(now(deps).getTime() + days * 86400_000).toISOString();
+  const title = delivered === false
+    ? `Send the approved reply to ${payload.to} (exported only, the system did not deliver it), then check for a response`
+    : `Check whether ${payload.to} replied to "${payload.subject}"`;
+  const t = await gateway.invoke({ workspaceId: ws, actor: { id: actor.id, kind: "user" }, toolId: "task.create", input: { title, dueAt: due, sourceRef: `approval:${approvalId}` }, idempotencyKey: `followup:${approvalId}` });
+  return t.status === "executed" ? (t.output as { taskId: string }).taskId : undefined;
+}
+
+/**
+ * Human decision only: approve, then hand execution to the durable job (write-ahead recorded). Used by the app.
+ * The decision commits first; the external effect happens later in a separate step that records its own claim and outcome.
+ */
+export async function approveForExecution(deps: BrainDeps, ws: string, approvalId: string, user: { id: string; role: string }, opts: { note?: string; confirmHash?: string } = {}) {
+  const a = await deps.store.getApproval(ws, approvalId);
+  if (!a) throw new DomainError("not_found", "Approval not found");
+  await deps.gateway.decide(ws, approvalId, "approve", user, opts);
+  const ctx = a["sourceContext"] as { inboxItemId?: string };
+  if (ctx.inboxItemId) await deps.store.markInbox(ws, ctx.inboxItemId, { status: "actioned" });
+}
+
+/** W1 last mile in one call (embedded/inline use and tests): decision -> execution -> receipt -> follow-up. */
 export async function approveAndRun(deps: BrainDeps, ws: string, approvalId: string, user: { id: string; role: string }, opts: { note?: string; confirmHash?: string } = {}) {
   const { store, gateway } = deps;
   const a = await store.getApproval(ws, approvalId);
   if (!a) throw new DomainError("not_found", "Approval not found");
   await gateway.decide(ws, approvalId, "approve", user, opts);
   const res = await gateway.execute(ws, approvalId, { id: user.id, kind: "user" });
-  if (!res.ok) return { ...res, taskId: undefined };
-  const ctx = a["sourceContext"] as { inboxItemId?: string; intent?: string; isDemo?: boolean };
-  const out = res.output as { delivered?: boolean };
-  const payload = a["payload"] as { to: string; subject: string };
-  const days = FOLLOW_UP_DAYS[ctx.intent ?? "unknown"] ?? 5;
-  const due = new Date(now(deps).getTime() + days * 86400_000).toISOString();
-  const title = out.delivered === false
-    ? `Send the approved reply to ${payload.to} (exported only, the system did not deliver it), then check for a response`
-    : `Check whether ${payload.to} replied to "${payload.subject}"`;
-  const t = await gateway.invoke({ workspaceId: ws, actor: { id: user.id, kind: "user" }, toolId: "task.create", input: { title, dueAt: due, sourceRef: `approval:${approvalId}` }, idempotencyKey: `followup:${approvalId}` });
+  if (!res.ok) return { ...res, taskId: undefined }; // includes { unknown: true }: no follow-up for an outcome nobody has confirmed
+  const ctx = a["sourceContext"] as { inboxItemId?: string };
+  const taskId = await ensureFollowUpTask(deps, ws, approvalId, user);
   if (ctx.inboxItemId) await store.markInbox(ws, ctx.inboxItemId, { status: "actioned" });
-  return { ...res, taskId: t.status === "executed" ? (t.output as { taskId: string }).taskId : undefined };
+  return { ...res, taskId };
 }
 
 export async function rejectApproval(deps: BrainDeps, ws: string, approvalId: string, user: { id: string; role: string }, note?: string) {

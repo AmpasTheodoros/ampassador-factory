@@ -23,7 +23,7 @@ export default async function Operations({ searchParams }: { searchParams: Promi
       jobs: await listJobs(app.store.db, app.workspaceId, undefined, 30),
       events: selJob ? await jobEvents(app.store.db, app.workspaceId, selJob) : [],
       pendingApprovals: (await app.store.listApprovals(app.workspaceId, "awaiting_approval")).length,
-      deadApprovals: await app.store.listApprovals(app.workspaceId, "failed"),
+      deadApprovals: [...(await app.store.listApprovals(app.workspaceId, "failed")), ...(await app.store.listApprovals(app.workspaceId, "unknown_outcome"))],
       cost: await app.store.costSummary(app.workspaceId),
       spend: await app.store.monthSpendEur(app.workspaceId),
       budget: Number(ws?.["monthlyBudgetEur"] ?? 0),
@@ -79,8 +79,8 @@ export default async function Operations({ searchParams }: { searchParams: Promi
           )}
         </Card>
         {d.deadApprovals.length > 0 && (
-          <Card title="Dead-lettered approvals">
-            <ul className="space-y-2 text-sm">{d.deadApprovals.map((a) => <li key={String(a["id"])}>{String(a["summary"])} <Link className="btn ml-2" href={`/approvals?id=${a["id"]}`}>Inspect / replay</Link></li>)}</ul>
+          <Card title="Dead-lettered approvals and unknown outcomes">
+            <ul className="space-y-2 text-sm">{d.deadApprovals.map((a) => <li key={String(a["id"])}><StatusBadge s={String(a["status"])} /> {String(a["summary"])} <Link className="btn ml-2" href={`/approvals?id=${a["id"]}`}>Inspect / replay</Link></li>)}</ul>
           </Card>
         )}
         <div className="grid gap-4 md:grid-cols-2">

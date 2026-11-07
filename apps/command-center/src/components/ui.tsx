@@ -15,7 +15,7 @@ export const DemoBadge = () => <Badge tone="demo">DEMO</Badge>;
 
 export function statusTone(s: string): Tone {
   if (["succeeded", "connected", "approved", "done", "actioned"].includes(s)) return "good";
-  if (["failed", "rejected", "expired", "error"].includes(s)) return "bad";
+  if (["failed", "rejected", "expired", "error", "dead", "unknown_outcome"].includes(s)) return "bad";
   if (["awaiting_approval", "executing", "queued", "running", "not_connected", "new"].includes(s)) return "warn";
   return "neutral";
 }

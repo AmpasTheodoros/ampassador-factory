@@ -17,18 +17,20 @@ export const runWorkspaceTask = task({
     const url = process.env.DATABASE_URL;
     if (!url) throw new Error("DATABASE_URL is not set in the Trigger.dev environment");
     const database = new PgDatabase({ connectionString: url, max: 2 });
+    const ledger = new PgDatabase({ connectionString: url, max: 2 }); // separate pool: ledger transactions must never wait on job transactions
     try {
       await database.assertLeastPrivilege(); // refuse to run with an over-privileged role
       const env = process.env as RuntimeEnv;
       const summary = await runWorkspace(database, payload.workspaceId, brainHandlers, {
         workerId: `trigger-${payload.jobId}`,
-        buildServices: makeBuildServices(database, env),
+        buildServices: makeBuildServices(database, env, { ledger }),
       });
       // retries and expiring leases wake the workspace again at the right time
       if (summary.nextDueAt) await tasks.trigger(TRIGGER_TASK_ID, payload, { delay: new Date(summary.nextDueAt), idempotencyKey: `wake:${payload.workspaceId}:${summary.nextDueAt}` });
       return summary;
     } finally {
       await database.close();
+      await ledger.close();
     }
   },
 });

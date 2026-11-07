@@ -106,7 +106,7 @@ export class Store {
   async transitionApproval(ws: string, id: string, from: ApprovalStatus | ApprovalStatus[], to: ApprovalStatus, extra: { decidedBy?: string; note?: string } = {}): Promise<boolean> {
     const froms = Array.isArray(from) ? from : [from];
     const r = await this.db.query(
-      `update approvals set status=$4, decided_by=coalesce($5,decided_by), decided_at=case when $5::text is null then decided_at else now() end, decision_note=coalesce($6,decision_note)
+      `update approvals set status=$4, executing_at=case when $4='executing' then now() else executing_at end, decided_by=coalesce($5,decided_by), decided_at=case when $5::text is null then decided_at else now() end, decision_note=coalesce($6,decision_note)
        where workspace_id=$1 and id=$2 and status = any($3::text[]) returning id`,
       [ws, id, froms, to, extra.decidedBy ?? null, extra.note ?? null],
     );

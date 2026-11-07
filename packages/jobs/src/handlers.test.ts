@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { MockLanguageModelV4 } from "ai/test";
 import { Store, openTestHarness, type TestHarness } from "@aaf/database";
 import { ingestMessage, approveAndRun, AiSdkProvider, type BrainDeps } from "@aaf/brain";
+import { ToolGateway, BUILTIN_TOOLS } from "@aaf/tools";
 import { enqueue, getJob, requestCancel, runWorkspace, brainHandlers, makeBuildServices, buildBrainDeps, refreshNetworkRadarConnection, _resetNetworkRadarCache, LocalDispatcher, TriggerDispatcher, TRIGGER_TASK_ID, type BrainServices, type Handlers } from "./index";
 import type { NetworkRadarAdapter, Health } from "@aaf/integrations";
 
@@ -13,7 +14,7 @@ let WA: string, WB: string;
 const asUser = <T>(u: string, fn: (s: Store) => Promise<T>) => h.database.run({ kind: "user", userId: u }, (q) => fn(new Store(q)));
 const userDeps = (store: Store): BrainDeps => buildBrainDeps(store, { AAF_OWNER_NAME: "Theo" }, undefined).deps;
 const svcRun = (ws: string, handlers: Handlers<BrainServices> = brainHandlers, env = {}, extra = {}) =>
-  runWorkspace(h.database, ws, handlers, { workerId: "w", backoffBaseMs: 1, buildServices: makeBuildServices(h.database, env), ...extra });
+  runWorkspace(h.database, ws, handlers, { workerId: "w", backoffBaseMs: 1, buildServices: makeBuildServices(h.database, env, { ledger: h.ledgerDatabase }), ...extra });
 const getJ = (ws: string, id: string) => h.database.run({ kind: "service", workspaceId: ws, reason: "t" }, (q) => getJob(q, ws, id));
 
 const MSG = { fromEmail: "anna@example.org", fromName: "Anna", subject: "Call?", body: "Could we have a call next week about our booking process?" };
@@ -119,7 +120,7 @@ describe("approval.execute handler", () => {
     expect(a!["status"]).toBe("succeeded");
     expect((await asUser(UA, (s) => s.listReceipts(WA, id)))[0]).toMatchObject({ ok: true, executedBy: expect.stringMatching(/^system:/) });
   });
-  it("refuses a rejected approval: job dead-letters, nothing executes", async () => {
+  it("a rejected approval is never executed: the job records that, no receipt exists, no follow-up", async () => {
     const id = await asUser(UA, async (s) => {
       const r = await ingestMessage(userDeps(s), WA, MSG);
       await userDeps(s).gateway.decide(WA, r.triage!.approvalId!, "reject", { id: UA, role: "owner" });
@@ -127,9 +128,10 @@ describe("approval.execute handler", () => {
       return r.triage!.approvalId!;
     });
     await svcRun(WA);
-    expect((await asUser(UA, (s) => s.listReceipts(WA, id)))).toHaveLength(0);
-    const jobs = await h.admin.query(`select status from jobs where workspace_id=$1`, [WA]);
-    expect(jobs[0]!["status"]).not.toBe("succeeded");
+    expect(await asUser(UA, (s) => s.listReceipts(WA, id))).toHaveLength(0);
+    const job = (await h.admin.query(`select output from jobs where workspace_id=$1 and type='approval.execute'`, [WA]))[0]!;
+    expect(job["output"]).toMatchObject({ approvalStatus: "rejected", executedHere: false });
+    expect(await asUser(UA, (s) => s.listTasks(WA))).toHaveLength(0);
   });
   it("a worker pinned to workspace A cannot execute workspace B's approval", async () => {
     const id = await asUser(UB, async (s) => {
@@ -140,6 +142,44 @@ describe("approval.execute handler", () => {
     await asUser(UA, (s) => enqueue(s.db, WA, { type: "approval.execute", input: { approvalId: id }, idempotencyKey: "cross", maxAttempts: 1, createdBy: "user:a" }));
     await svcRun(WA);
     expect((await asUser(UB, (s) => s.getApproval(WB, id)))!["status"]).toBe("approved"); // untouched
+  });
+});
+
+describe("uncertain external side effects", () => {
+  it("an ambiguous failure while sending parks the approval as unknown_outcome (kept!), flags the job for a human, and replaying the JOB never sends again", async () => {
+    let sends = 0;
+    const flaky = { ...BUILTIN_TOOLS.find((t) => t.toolId === "email.export_reply_draft")!, toolId: "test.send_email", async execute() { sends++; throw new Error("connection reset after the request body was written"); } };
+    const makeDeps = (store: Store): BrainDeps => ({ ...buildBrainDeps(store, { AAF_OWNER_NAME: "Theo" }, undefined).deps, gateway: new ToolGateway(store, [flaky, ...BUILTIN_TOOLS]) });
+    const buildServices = (store: Store) => ({ services: { deps: makeDeps(store) } });
+    const approvalId = await asUser(UA, async (s) => {
+      const gw = makeDeps(s).gateway;
+      const q: any = await gw.invoke({ workspaceId: WA, actor: { id: "brain", kind: "agent" }, toolId: "test.send_email", input: { to: "a@x.co", subject: "s", body: "b" } });
+      await gw.decide(WA, q.approvalId, "approve", { id: UA, role: "owner" });
+      await enqueue(s.db, WA, { type: "approval.execute", input: { approvalId: q.approvalId }, idempotencyKey: "exec-unk", maxAttempts: 3, createdBy: "user:a" });
+      return q.approvalId as string;
+    });
+    const run = () => runWorkspace(h.database, WA, brainHandlers, { workerId: "w", backoffBaseMs: 1, buildServices });
+    expect(await run()).toMatchObject({ ran: 1, succeeded: 1 });           // the job handled it; the outcome is on the approval
+    expect(sends).toBe(1);
+    expect((await asUser(UA, (s) => s.getApproval(WA, approvalId)))!["status"]).toBe("unknown_outcome");
+    const job = (await h.admin.query(`select id, status, output from jobs where workspace_id=$1 and type='approval.execute'`, [WA]))[0]!;
+    expect(job["output"]).toMatchObject({ approvalStatus: "unknown_outcome", needsHuman: true });
+    expect(String((job["output"] as { error: string }).error)).toMatch(/Outcome unknown/);
+    expect((await asUser(UA, (s) => s.listReceipts(WA, approvalId))).some((r) => /outcome unknown/.test(String(r["error"])))).toBe(true);
+    // someone enqueues execution AGAIN for the same approval: nothing may be sent
+    await asUser(UA, (s) => enqueue(s.db, WA, { type: "approval.execute", input: { approvalId }, idempotencyKey: "exec-unk-again", createdBy: "user:a" }));
+    await run();
+    expect(sends).toBe(1);
+    expect((await asUser(UA, (s) => s.getApproval(WA, approvalId)))!["status"]).toBe("unknown_outcome");
+    // no follow-up task is created for an outcome nobody has confirmed
+    expect(await asUser(UA, (s) => s.listTasks(WA))).toHaveLength(0);
+    // only a human reconciliation changes it; 'delivered' closes it without any further send, then the follow-up appears
+    await asUser(UA, (s) => makeDeps(s).gateway.reconcile(WA, approvalId, { id: UA, role: "owner" }, "delivered", "present in Sent"));
+    await asUser(UA, (s) => enqueue(s.db, WA, { type: "approval.execute", input: { approvalId }, idempotencyKey: "exec-after-reconcile", createdBy: "user:a" }));
+    await run();
+    expect(sends).toBe(1);
+    expect((await asUser(UA, (s) => s.getApproval(WA, approvalId)))!["status"]).toBe("succeeded");
+    expect(await asUser(UA, (s) => s.listTasks(WA))).toHaveLength(1);
   });
 });
 
@@ -170,7 +210,7 @@ describe("dispatchers", () => {
   it("local dispatcher runs due jobs for the given workspace only", async () => {
     await asUser(UA, async (s) => { const r = await ingestMessage(userDeps(s), WA, MSG, { triage: false }); await enqueue(s.db, WA, { type: "w1.triage", input: { inboxItemId: r.inboxItemId }, idempotencyKey: "a", createdBy: "u" }); });
     await asUser(UB, async (s) => { const r = await ingestMessage(userDeps(s), WB, MSG, { triage: false }); await enqueue(s.db, WB, { type: "w1.triage", input: { inboxItemId: r.inboxItemId }, idempotencyKey: "b", createdBy: "u" }); });
-    const d = new LocalDispatcher(h.database, brainHandlers, { workerId: "local", buildServices: makeBuildServices(h.database, {}) });
+    const d = new LocalDispatcher(h.database, brainHandlers, { workerId: "local", buildServices: makeBuildServices(h.database, {}, { ledger: h.ledgerDatabase }) });
     await d.dispatch({ workspaceId: WA, jobId: "x", correlationId: "c" });
     expect(d.last).toMatchObject({ ran: 1, waiting: 1 });
     expect(await asUser(UB, (s) => s.listApprovals(WB))).toHaveLength(0); // B untouched until its own dispatch

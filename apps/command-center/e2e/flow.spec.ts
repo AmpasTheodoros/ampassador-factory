@@ -32,6 +32,8 @@ test.describe.serial("Command Center acceptance flow", () => {
     const rb = await ready.json();
     expect(JSON.stringify(rb)).toContain("AAF_RUNTIME_MODE");
     expect(JSON.stringify(rb)).not.toContain(OWNER.password);
+    // which database is the running app really using? (the real-Postgres run must not silently fall back to the embedded one)
+    expect(rb.checks.database.kind).toBe(process.env.AAF_E2E_DATABASE_URL ? "pg" : "pglite");
 
     const res = await request.get("/login");
     const h = res.headers();
@@ -80,10 +82,11 @@ test.describe.serial("Command Center acceptance flow", () => {
     await page.getByRole("link", { name: "Overview" }).click();
     await expect(page.getByText(/exported only, the system did not deliver it/).first()).toBeVisible();
 
-    // the durable job parked on the approval and resumed after the decision
+    // two durable jobs: triage (parked on the approval, resumed after the decision) and execution (write-ahead recorded)
     await page.getByRole("link", { name: "Operations" }).click();
-    await expect(page.locator("div.card", { hasText: "Completed jobs" }).getByText("1", { exact: true })).toBeVisible();
-    await page.getByRole("link", { name: "Events" }).first().click();
+    await expect(page.locator("div.card", { hasText: "Completed jobs" }).getByText("2", { exact: true })).toBeVisible();
+    await expect(page.getByText("approval.execute").first()).toBeVisible();
+    await page.locator("li", { hasText: "w1.triage" }).getByRole("link", { name: "Events" }).click();
     for (const kind of ["enqueued", "started", "waiting_approval", "resumed", "succeeded"]) await expect(page.getByText(new RegExp(`· ${kind}\\b`)).first()).toBeVisible();
     await expect(page.getByText("networkradar.lookup_contact").first()).toBeVisible();
     await expect(page.getByText("Needs connection").first()).toBeVisible();

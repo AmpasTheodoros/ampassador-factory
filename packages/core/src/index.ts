@@ -21,7 +21,7 @@ export const RiskTier = z.enum(["read", "draft", "write_low", "external_communic
 export type RiskTier = z.infer<typeof RiskTier>;
 
 export const ApprovalStatus = z.enum([
-  "proposed", "awaiting_approval", "approved", "rejected", "expired", "executing", "succeeded", "failed",
+  "proposed", "awaiting_approval", "approved", "rejected", "expired", "executing", "succeeded", "failed", "unknown_outcome",
 ]);
 export type ApprovalStatus = z.infer<typeof ApprovalStatus>;
 

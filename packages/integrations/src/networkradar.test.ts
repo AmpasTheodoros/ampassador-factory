@@ -11,7 +11,9 @@ import { NetworkRadarAdapter, NetworkRadarError, READ_ONLY_TOOLS, missingConfig 
  * The mock reproduces what the NetworkRadar source documents: stateless Streamable HTTP, Bearer auth,
  * read tools annotated readOnlyHint, write tools present on the same server, results as JSON text.
  */
-const KEY = "test-key-not-a-real-credential";
+const KEY = "nrro_" + "t".repeat(43);              // a read-only key: the (patched) server limits it to the five read tools
+const FULL_KEY = "full-access-key-not-a-real-credential"; // the legacy full-access key: the server exposes EVERYTHING to it
+const LEAKY_KEY = "nrro_" + "L".repeat(43);          // looks read-only but the server (misconfigured) gives it the full surface
 const calls: string[] = [];
 const ok = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
 const fail = (m: string) => ({ isError: true, content: [{ type: "text" as const, text: m }] });
@@ -21,7 +23,7 @@ const PEOPLE = [
   { id: "ckperson2", name: "Maria Georgiou", title: "Buyer", organization: "Sani", tier: "B", relationshipStatus: "cold", overallScore: 40, lastContact: null, lastConversation: null, email: "m.georgiou@sani.example" },
 ];
 
-function buildServer() {
+function buildServer(restricted: boolean) {
   const s = new McpServer({ name: "mock-network-radar", version: "0" });
   const ro = { readOnlyHint: true };
   s.registerTool("search_people", { description: "d", inputSchema: { query: z.string().optional(), limit: z.number().optional() }, annotations: ro }, async ({ query }) => {
@@ -45,7 +47,8 @@ function buildServer() {
     calls.push("get_network_summary");
     return ok({ people: 2, organizations: 2, events: 1, openActions: 1, relationshipStages: { warm: 1, cold: 1 } });
   });
-  // dangerous tools living on the same server, exactly like the real one
+  if (restricted) return s; // what the patched NetworkRadar serves a read-only key: nothing else exists
+  // dangerous tools living on the same server, exactly like the real (unpatched) one
   s.registerTool("send_email", { description: "SENDS EMAIL", inputSchema: { to: z.string() } }, async () => { calls.push("send_email"); return ok({ sent: true }); });
   s.registerTool("set_relationship_objective", { description: "writes", inputSchema: { personId: z.string() } }, async () => { calls.push("set_relationship_objective"); return ok({}); });
   return s;
@@ -56,14 +59,16 @@ let url: string;
 
 beforeAll(async () => {
   server = http.createServer(async (req, res) => {
-    if (req.headers.authorization !== `Bearer ${KEY}`) {
+    const bearer = (req.headers.authorization ?? "").replace(/^Bearer /, "");
+    const known: Record<string, boolean> = { [KEY]: true, [FULL_KEY]: false, [LEAKY_KEY]: false }; // value = restricted?
+    if (!(bearer in known)) {
       res.writeHead(401, { "WWW-Authenticate": 'Bearer resource_metadata="x"' }).end("Unauthorized");
       return;
     }
     const chunks: Buffer[] = [];
     for await (const c of req) chunks.push(c as Buffer);
     const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : undefined;
-    const mcp = buildServer();
+    const mcp = buildServer(known[bearer]!);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     res.on("close", () => { void transport.close(); void mcp.close(); });
     await mcp.connect(transport);
@@ -74,7 +79,7 @@ beforeAll(async () => {
 });
 afterAll(async () => { await new Promise((r) => server.close(r)); });
 
-const adapter = (key = KEY) => new NetworkRadarAdapter({ url, apiKey: key, timeoutMs: 8000 });
+const adapter = (key = KEY, extra: object = {}) => new NetworkRadarAdapter({ url, apiKey: key, timeoutMs: 8000, ...extra });
 
 describe("NetworkRadar adapter: contract against a local mock MCP server (real HTTP, real MCP SDK)", () => {
   it("health: connected, and reports the read-only tools only", async () => {
@@ -83,9 +88,10 @@ describe("NetworkRadar adapter: contract against a local mock MCP server (real H
   });
 
   it("wrong or missing credentials => blocked: unauthorized, never connected", async () => {
-    const h = await adapter("wrong").health();
+    const wrong = "nrro_" + "w".repeat(43);
+    const h = await adapter(wrong).health();
     expect(h).toMatchObject({ status: "blocked", code: "unauthorized" });
-    await expect(adapter("wrong").getNetworkSummary()).rejects.toMatchObject({ code: "unauthorized" });
+    await expect(adapter(wrong).getNetworkSummary()).rejects.toMatchObject({ code: "unauthorized" });
   });
 
   it("the five read operations return typed data with canonical ids and source provenance", async () => {
@@ -106,7 +112,8 @@ describe("NetworkRadar adapter: contract against a local mock MCP server (real H
 
   it("CANNOT call write tools: refused client-side before any request reaches the server", async () => {
     calls.length = 0;
-    const a = adapter() as unknown as { call: (t: string, a: object, s: z.ZodType) => Promise<unknown> };
+    // strict mode OFF + the full-access key: this isolates the client-side allowlist as the only barrier
+    const a = adapter(FULL_KEY, { requireRestricted: false }) as unknown as { call: (t: string, a: object, s: z.ZodType) => Promise<unknown> };
     for (const t of ["send_email", "set_relationship_objective", "create_person", "approve_chief_reply"])
       await expect(a.call(t, {}, z.unknown())).rejects.toMatchObject({ code: "forbidden_tool" });
     expect(calls).toEqual([]);
@@ -124,7 +131,12 @@ describe("NetworkRadar adapter: contract against a local mock MCP server (real H
     });
     await new Promise<void>((r) => lax.listen(0, "127.0.0.1", r));
     const u = `http://127.0.0.1:${(lax.address() as AddressInfo).port}/mcp`;
-    const a = new NetworkRadarAdapter({ url: u, apiKey: "x" });
+    // strict mode ON: the missing annotation is caught as an over-broad credential
+    const strict = new NetworkRadarAdapter({ url: u, apiKey: KEY });
+    await expect(strict.getPerson("ckperson1")).rejects.toMatchObject({ code: "credential_too_broad" });
+    expect(await strict.health()).toMatchObject({ status: "blocked", code: "credential_too_broad" });
+    // strict mode OFF: the per-tool readOnlyHint check still refuses it
+    const a = new NetworkRadarAdapter({ url: u, apiKey: "x", requireRestricted: false });
     await expect(a.getPerson("ckperson1")).rejects.toMatchObject({ code: "not_read_only" });
     expect(await a.health()).toMatchObject({ status: "blocked", code: "contract" });
     await new Promise((r) => lax.close(r));
@@ -148,8 +160,35 @@ describe("NetworkRadar adapter: contract against a local mock MCP server (real H
   });
 
   it("an unreachable server is reported as blocked/transport, quickly and without throwing from health()", async () => {
-    const h = await new NetworkRadarAdapter({ url: "http://127.0.0.1:9/mcp", apiKey: "k", timeoutMs: 2000 }).health();
+    const h = await new NetworkRadarAdapter({ url: "http://127.0.0.1:9/mcp", apiKey: KEY, timeoutMs: 2000 }).health();
     expect(h.status).toBe("blocked");
+  });
+
+  it("the full-access key is REFUSED at construction: the Company OS can only hold a read-only key", () => {
+    expect(() => adapter(FULL_KEY)).toThrow(/READ-ONLY key/);
+    expect(() => adapter("")).toThrow(/READ-ONLY key/);
+    try { adapter(FULL_KEY); } catch (e) { expect((e as NetworkRadarError).code).toBe("not_configured"); expect((e as Error).message).not.toContain(FULL_KEY); }
+  });
+
+  it("a key that LOOKS read-only but whose server grants write tools is refused on every call, before any tool runs", async () => {
+    calls.length = 0;
+    const a = adapter(LEAKY_KEY);
+    expect(await a.health()).toMatchObject({ status: "blocked", code: "credential_too_broad" });
+    await expect(a.searchPeople({ query: "Maria" })).rejects.toMatchObject({ code: "credential_too_broad" });
+    await expect(a.lookupContact({ email: "maria@ikos.example", name: "Maria" })).rejects.toMatchObject({ code: "credential_too_broad" });
+    expect(calls).toEqual([]); // not even the read tools were executed
+  });
+
+  it("against a correctly restricted server the tool list is exactly the five read tools", async () => {
+    const tools = await new Promise<string[]>(async (resolve) => {
+      const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+      const { StreamableHTTPClientTransport } = await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
+      const c = new Client({ name: "t", version: "0" }, { capabilities: {} });
+      await c.connect(new StreamableHTTPClientTransport(new URL(url), { requestInit: { headers: { Authorization: `Bearer ${KEY}` } } }));
+      resolve((await c.listTools()).tools.map((t) => t.name).sort());
+      await c.close();
+    });
+    expect(tools).toEqual([...READ_ONLY_TOOLS].sort());
   });
 
   it("missingConfig names absent variables without echoing values", () => {

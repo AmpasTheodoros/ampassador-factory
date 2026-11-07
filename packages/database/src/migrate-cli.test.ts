@@ -36,7 +36,7 @@ describe("db:migrate CLI", () => {
 
       const first = await run();
       expect(first.status, first.stdout + first.stderr).toBe(0);
-      expect(first.stdout).toMatch(/applied: 0001_init\.sql, 0002_approval_immutability\.sql, 0003_least_privilege\.sql, 0004_jobs\.sql/);
+      expect(first.stdout).toMatch(/applied: 0001_init\.sql, 0002_approval_immutability\.sql, 0003_least_privilege\.sql, 0004_jobs\.sql, 0005_budget_and_unknown_outcome\.sql/);
 
       const second = await run();
       expect(second.status, second.stderr).toBe(0);

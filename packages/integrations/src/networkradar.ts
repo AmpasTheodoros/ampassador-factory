@@ -19,7 +19,7 @@ export const READ_ONLY_TOOLS = ["search_people", "get_person", "get_relationship
 export type ReadOnlyTool = (typeof READ_ONLY_TOOLS)[number];
 const ALLOW = new Set<string>(READ_ONLY_TOOLS);
 
-export type NetworkRadarErrorCode = "unauthorized" | "forbidden_tool" | "not_read_only" | "tool_missing" | "contract" | "transport" | "tool_error" | "timeout" | "not_configured";
+export type NetworkRadarErrorCode = "credential_too_broad" | "unauthorized" | "forbidden_tool" | "not_read_only" | "tool_missing" | "contract" | "transport" | "tool_error" | "timeout" | "not_configured";
 export class NetworkRadarError extends Error {
   constructor(public code: NetworkRadarErrorCode, message: string) {
     super(message);
@@ -44,10 +44,18 @@ export type PersonFull = z.infer<typeof PersonFull>;
 export type NetworkAction = z.infer<typeof Action>;
 export type NetworkSummary = z.infer<typeof Summary>;
 
+export const READONLY_KEY_PREFIX = "nrro_";
+
 export interface NetworkRadarConfig {
   url: string;
   apiKey: string;
   timeoutMs?: number;
+  /**
+   * Default true. The Company OS must hold a credential that the NetworkRadar SERVER limits to read-only tools
+   * (see docs/networkradar-readonly-key). With this on: the key must carry the read-only prefix, and every call is
+   * refused if the server lists even one tool that is not readOnlyHint. Turn off only for tests of the client-side allowlist.
+   */
+  requireRestricted?: boolean;
 }
 export interface AdapterOptions {
   /** Test seam: supply a transport instead of real HTTP. */
@@ -68,6 +76,8 @@ export class NetworkRadarAdapter {
     let u: URL;
     try { u = new URL(cfg.url); } catch { throw new NetworkRadarError("not_configured", "NETWORKRADAR_MCP_URL is not a valid URL"); }
     if (u.protocol !== "https:" && !/^(localhost|127\.0\.0\.1)$/.test(u.hostname)) throw new NetworkRadarError("not_configured", "NetworkRadar URL must be https (the API key is a bearer credential)");
+    if (cfg.requireRestricted !== false && !cfg.apiKey.startsWith(READONLY_KEY_PREFIX))
+      throw new NetworkRadarError("not_configured", `NETWORKRADAR_MCP_API_KEY must be a NetworkRadar READ-ONLY key (starts with "${READONLY_KEY_PREFIX}"). Never put the full-access MCP_API_KEY in the Company OS.`);
   }
 
   private transport(): Transport {
@@ -97,6 +107,7 @@ export class NetworkRadarAdapter {
     if (!ALLOW.has(tool)) throw new NetworkRadarError("forbidden_tool", `Tool "${tool}" is not on the read-only allow-list`);
     return this.withClient(async (client) => {
       const listed = await client.listTools();
+      this.assertRestricted(listed.tools);
       const def = listed.tools.find((t) => t.name === tool);
       if (!def) throw new NetworkRadarError("tool_missing", `Server does not expose "${tool}" (contract drift)`);
       if (def.annotations?.readOnlyHint !== true) throw new NetworkRadarError("not_read_only", `Server does not mark "${tool}" as read-only; refusing to call it`);
@@ -117,9 +128,18 @@ export class NetworkRadarAdapter {
     return { data: value, source: { system: "networkradar", tool, retrievedAt, recordIds: ids } };
   }
 
+  /** Server-side proof that the credential is restricted: nothing on its tool list may be a non-read tool. */
+  private assertRestricted(tools: { name: string; annotations?: { readOnlyHint?: boolean } }[]) {
+    if (this.cfg.requireRestricted === false) return;
+    const broad = tools.filter((t) => t.annotations?.readOnlyHint !== true);
+    if (broad.length)
+      throw new NetworkRadarError("credential_too_broad", `This credential can reach ${broad.length} tool(s) that are not read-only (for example "${broad[0]!.name}"). Refusing to use it: ask NetworkRadar for a read-only key.`);
+  }
+
   async health(): Promise<Health> {
     try {
       const tools = await this.withClient(async (c) => (await c.listTools()).tools);
+      this.assertRestricted(tools);
       const byName = new Map(tools.map((t) => [t.name, t]));
       const bad = READ_ONLY_TOOLS.filter((t) => byName.get(t)?.annotations?.readOnlyHint !== true);
       if (bad.length) return { status: "blocked", code: "contract", reason: `Missing or not read-only: ${bad.join(", ")}` };

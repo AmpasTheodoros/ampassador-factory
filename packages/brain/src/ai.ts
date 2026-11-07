@@ -28,12 +28,14 @@ export class AiSdkProvider implements LlmProvider {
   readonly modelLabel: string;
   readonly tasks?: AiTask[];
   readonly pricing: Pricing;
+  readonly maxAttempts: number;
   constructor(private o: AiSdkProviderOptions) {
     this.id = o.id;
     this.location = o.location;
     this.modelLabel = o.modelLabel;
     this.tasks = o.tasks;
     this.pricing = o.pricing ?? { eurPerMIn: 15, eurPerMOut: 75, estimated: true };
+    this.maxAttempts = (o.maxRetries ?? 1) + 1; // every SDK retry can be billed
   }
 
   private cost(inT: number, outT: number) {

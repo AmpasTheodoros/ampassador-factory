@@ -10,6 +10,7 @@ export const EnvSchema = z.object({
   // data plane
   DATABASE_URL: optStr, // Supabase pooler URL for the least-privileged login role (aaf_app)
   DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(20).default(3),
+  DATABASE_LEDGER_POOL_MAX: z.coerce.number().int().min(1).max(10).default(2), // short budget transactions; separate so request transactions cannot starve them
   AAF_DATA_DIR: z.string().default(".data/pglite"), // embedded database for local dev only; ":memory:" for throwaway
   // auth
   AAF_AUTH_PROVIDER: z.enum(["supabase", "local"]).optional(),
