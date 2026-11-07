@@ -12,3 +12,18 @@
 | 8 | shadcn/ui not added; plain Tailwind components | Fewer dependencies for R1 | When component count justifies it |
 | 9 | Email export instead of send | Gmail adapter not built; honest `delivered: false` | R2 |
 | 10 | Spec docs `integrations.md`, `agent-and-skill-registry.md`, `operations-runbook.md`, `deployment.md` folded into `architecture.md`, README and the Agents page | Avoid docs that restate code | When they carry independent content |
+
+## R1.5
+
+| # | Decision | Why | Revisit when |
+|---|---|---|---|
+| 11 | App connects as `aaf_app` and switches role per transaction (authenticated / anon / aaf_service); direct Postgres, not PostgREST | RLS enforced for real requests without the service-role key; one transaction per request keeps SET LOCAL safe on a transaction pooler | If a per-request JWT path (supabase-js) is preferred |
+| 12 | Service role is tenant-pinned by a GUC, not a global bypass | Jobs need writes users cannot do (receipts, job state) but must stay inside one tenant | When a cross-tenant scheduler is needed (needs its own narrow function) |
+| 13 | Supabase Auth in production, a separate local provider in development, chosen by config; local forbidden in production | Dev must work offline; prod must not | - |
+| 14 | Test-only `AAF_RUNTIME_MODE=e2e` lets browser tests run a production build on the embedded DB; refused on Vercel; readiness fails while set | `next start` forces NODE_ENV=production and real Supabase is unavailable here | When CI has a real Postgres plus Auth |
+| 15 | PGlite kept for tests and local dev; `embedded-postgres` tried and abandoned | Its beta Windows binary accepted TCP but never completed a handshake; time-boxed | When CI can use a Postgres service container |
+| 16 | AI via the Vercel AI SDK (`ai` 7) with structured output; model ids are configuration; pessimistic default prices | Spec; keeps the budget binding when prices are unknown | After the first real calls |
+| 17 | The model never decides authority; rules always run; fixed reconciliation; opt-out wins | Safety over model quality | After the eval set has real corrections |
+| 18 | Own durable queue (Postgres skip-locked + leases) behind a dispatcher; Trigger.dev is a dispatcher, not a rewrite | Tested locally today; Trigger.dev can run the same handlers | When Trigger.dev is configured |
+| 19 | Cost rows are deferred and written after the transaction | A rolled-back job must not erase its spend | - |
+| 20 | NetworkRadar via its existing MCP over Streamable HTTP, with client-side read-only enforcement | It is the only machine contract that exists; the server cannot scope keys | When NetworkRadar gains a read-only key or REST API |

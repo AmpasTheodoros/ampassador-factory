@@ -5,7 +5,8 @@
   "scripts": {
     "build": "turbo run build",
     "test": "turbo run test",
-    "typecheck": "turbo run typecheck"
+    "typecheck": "turbo run typecheck",
+    "db:migrate": "pnpm --filter @aaf/database db:migrate"
   },
   "devDependencies": {
     "turbo": "^2.5.0",

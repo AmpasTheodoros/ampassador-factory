@@ -1,0 +1,25 @@
+{
+  "name": "@aaf/jobs",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "@aaf/brain": "workspace:*",
+    "@aaf/core": "workspace:*",
+    "@aaf/database": "workspace:*",
+    "@aaf/integrations": "workspace:*",
+    "@aaf/telemetry": "workspace:*",
+    "@aaf/tools": "workspace:*",
+    "@trigger.dev/sdk": "^4.8.3",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "ai": "^7.0.165"
+  }
+}

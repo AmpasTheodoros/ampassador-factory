@@ -48,8 +48,10 @@ describe("RLS (allow/deny, two workspaces)", () => {
     expect((await upd(UB)).length).toBe(0);
     expect((await upd(UA)).length).toBe(1);
   });
-  it("audit_log is read-only for users and append-only even for server", async () => {
-    await expect(db.asUser(UA, (q) => q.query(`insert into audit_log(workspace_id,actor,action,entity) values ($1,'u','a','e')`, [WA]))).rejects.toThrow();
+  it("audit_log: a member may append for their own workspace only; no update/delete for anyone", async () => {
+    await db.asUser(UA, (q) => q.query(`insert into audit_log(workspace_id,actor,action,entity) values ($1,'u','a','e')`, [WA]));
+    await expect(db.asUser(UA, (q) => q.query(`insert into audit_log(workspace_id,actor,action,entity) values ($1,'u','a','e')`, [WB]))).rejects.toThrow();
+    await expect(db.asUser(UA, (q) => q.query(`update audit_log set action='x'`))).rejects.toThrow();
     await expect(db.query(`delete from audit_log`)).rejects.toThrow(/append-only/);
   });
   it("unauthenticated (no sub) sees nothing", async () => {

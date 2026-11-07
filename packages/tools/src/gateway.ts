@@ -14,6 +14,18 @@ export interface ToolContext {
   actor: Actor;
   /** Pass to the connector so a retried call cannot double-send. */
   idempotencyKey: string;
+  /** Connector clients injected by the host (never constructed by tools). */
+  services: Services;
+}
+
+export interface ContactLookupResult {
+  match: "verified" | "candidate" | "none";
+  personId?: string;
+  recordIds: string[];
+  candidates: { id: string; name: string }[];
+}
+export interface Services {
+  networkradar?: { lookupContact(q: { email?: string; name?: string }): Promise<ContactLookupResult> };
 }
 
 export interface ToolDef<I = any, O = any> {
@@ -44,13 +56,13 @@ export interface GatewayOptions {
   approvalTtlMs?: number;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
+  services?: Services;
 }
 
 const INTERNAL_SCOPES = ["tasks:write", "drafts:write", "exports:write", "inbox:read", "network:read_local"];
 
 export class ToolGateway {
   private tools = new Map<string, ToolDef>();
-  private hits = new Map<string, number[]>();
   constructor(private store: Store, tools: ToolDef[], private opts: GatewayOptions = {}) {
     for (const t of tools) {
       if (this.tools.has(t.toolId)) throw new Error(`duplicate tool ${t.toolId}`);
@@ -90,17 +102,9 @@ export class ToolGateway {
     return null;
   }
 
-  private rateOk(ws: string, tool: ToolDef): boolean {
-    const k = `${ws}:${tool.toolId}`;
-    const t = this.now();
-    const arr = (this.hits.get(k) ?? []).filter((x) => t - x < 60_000);
-    if (arr.length >= tool.rateLimitPerMin) {
-      this.hits.set(k, arr);
-      return false;
-    }
-    arr.push(t);
-    this.hits.set(k, arr);
-    return true;
+  /** Shared across serverless instances (DB-backed fixed window). */
+  private rateOk(ws: string, tool: ToolDef): Promise<boolean> {
+    return this.store.rateHit(`tool:${ws}:${tool.toolId}`, tool.rateLimitPerMin, 60);
   }
 
   async invoke(req: { workspaceId: string; actor: Actor; toolId: string; input: unknown; sourceContext?: Record<string, unknown>; idempotencyKey?: string }): Promise<InvokeResult> {
@@ -118,7 +122,7 @@ export class ToolGateway {
     if (!parsed.success) return deny("invalid_input", z.prettifyError(parsed.error));
     const pre = await this.precheck(ws, tool);
     if (pre && pre.status === "denied") return deny(pre.code, pre.reason);
-    if (!this.rateOk(ws, tool)) return deny("rate_limited", `Rate limit ${tool.rateLimitPerMin}/min exceeded`);
+    if (!(await this.rateOk(ws, tool))) return deny("rate_limited", `Rate limit ${tool.rateLimitPerMin}/min exceeded`);
 
     const needsApproval = tool.riskTier === "external_communication" || tool.riskTier === "financial_or_irreversible" || tool.approvalPolicy === "always" || tool.approvalPolicy === "always_double";
     if (needsApproval) {
@@ -137,7 +141,7 @@ export class ToolGateway {
 
     const started = this.now();
     try {
-      const out = await this.runWithTimeout(tool, { workspaceId: ws, store: this.store, actor: req.actor, idempotencyKey: req.idempotencyKey ?? newId() }, parsed.data);
+      const out = await this.runWithTimeout(tool, { workspaceId: ws, store: this.store, actor: req.actor, idempotencyKey: req.idempotencyKey ?? newId(), services: this.opts.services ?? {} }, parsed.data);
       await log("executed", undefined, this.now() - started);
       await this.store.audit(ws, `${req.actor.kind}:${req.actor.id}`, "tool.executed", "tool", tool.toolId, pick(parsed.data, tool.auditFields));
       return { status: "executed", output: out };
@@ -224,7 +228,7 @@ export class ToolGateway {
     for (let i = 0; i < Math.max(1, tool.retry.max); i++) {
       attempt++;
       try {
-        const out = await this.runWithTimeout(tool, { workspaceId: ws, store: this.store, actor: executor, idempotencyKey: approvalId }, parsed.data);
+        const out = await this.runWithTimeout(tool, { workspaceId: ws, store: this.store, actor: executor, idempotencyKey: approvalId, services: this.opts.services ?? {} }, parsed.data);
         await this.store.insertReceipt(ws, approvalId, attempt, true, out, null, actorStr);
         await this.store.transitionApproval(ws, approvalId, "executing", "succeeded");
         await this.store.audit(ws, actorStr, "approval.executed", "approval", approvalId, { toolId: tool.toolId, attempt, ...pick(parsed.data, tool.auditFields) });

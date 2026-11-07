@@ -1,11 +1,18 @@
-import { runtime, WORKSPACE_ID } from "@/lib/runtime";
-import { authMode } from "@/lib/auth";
+import { refreshNetworkRadarConnection } from "@aaf/jobs";
+import { missingConfig } from "@aaf/integrations";
+import { withApp } from "@/lib/runtime";
+import { authProviderName, getEnv } from "@/lib/config";
+import { getDb } from "@/lib/db";
+import { runtimeEnv } from "@/lib/services";
 import { Card, PageTitle, StatusBadge, Badge, fmt } from "@/components/ui";
 
 export default async function Settings() {
-  const rt = await runtime();
-  const ws = await rt.store.getWorkspace(WORKSPACE_ID);
-  const conns = await rt.store.listConnections(WORKSPACE_ID);
+  const env = getEnv();
+  const { ws, conns, models, role, nr } = await withApp(async (app) => {
+    const nr = await refreshNetworkRadarConnection(app.store, app.workspaceId, runtimeEnv()); // cached 5 min
+    return { ws: await app.store.getWorkspace(app.workspaceId), conns: await app.store.listConnections(app.workspaceId), models: app.router.describe(), role: app.role, nr };
+  });
+  const { database } = await getDb();
   return (
     <>
       <PageTitle title="Settings" />
@@ -15,13 +22,16 @@ export default async function Settings() {
             <dt className="muted">Name</dt><dd>{String(ws?.["name"])}</dd>
             <dt className="muted">Data policy</dt><dd><Badge>{String(ws?.["dataPolicy"])}</Badge></dd>
             <dt className="muted">Monthly AI budget</dt><dd>{Number(ws?.["monthlyBudgetEur"]).toFixed(2)} EUR</dd>
-            <dt className="muted">Sign-in</dt><dd>{authMode() === "password" ? "Password" : authMode() === "dev_open" ? "Dev mode (open)" : "Closed (not configured)"}</dd>
-            <dt className="muted">Role</dt><dd>owner (single user in R1)</dd>
+            <dt className="muted">Your role</dt><dd>{role} (from the memberships table)</dd>
+            <dt className="muted">Sign-in</dt><dd>{authProviderName(env)}{authProviderName(env) === "local" ? " (development only)" : ""}</dd>
+            <dt className="muted">Database</dt><dd>{database.kind === "pg" ? "PostgreSQL via pooled connection" : "Embedded PostgreSQL (development)"}</dd>
           </dl>
         </Card>
         <Card title="Model routing">
-          <p className="text-sm">{rt.llm.configured ? `Provider configured: ${rt.llm.location}, model ${rt.llm.model}.` : "No LLM configured. Drafts use deterministic templates."}</p>
-          <p className="muted mt-1 text-xs">Policy local_only never falls back to a cloud provider. redact_then_cloud masks emails and phone numbers first. Local worker nodes: none registered (prototype planned for R4).</p>
+          {models.length === 0 ? <p className="text-sm">No model configured. Classification is rule-based and drafts are template-generated.</p> : (
+            <ul className="space-y-1 text-sm">{models.map((m) => <li key={m.id}><span className="font-mono">{m.model}</span> <Badge>{m.location}</Badge> <span className="muted text-xs">tasks: {Array.isArray(m.tasks) ? m.tasks.join(", ") : m.tasks} · {m.priced ? "priced" : "price unknown: pessimistic estimate applied"}</span></li>)}</ul>
+          )}
+          <p className="muted mt-2 text-xs">local_only never falls back to a cloud provider. redact_then_cloud masks emails and phone numbers first. Calls are bounded by timeout, retries, output size and a worst-case budget check.</p>
         </Card>
         <Card title="Connectors">
           <ul className="divide-y divide-[var(--line)]">
@@ -32,6 +42,7 @@ export default async function Settings() {
               </li>
             ))}
           </ul>
+          {nr.status === "not_configured" && <p className="muted mt-2 text-xs">NetworkRadar needs {missingConfig(runtimeEnv()).join(" and ")}. See docs/networkradar-connectivity.md.</p>}
         </Card>
       </div>
     </>

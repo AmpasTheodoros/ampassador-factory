@@ -77,7 +77,7 @@ export const gmailSend: ToolDef = {
 
 export const networkRadarLookup: ToolDef = {
   toolId: "networkradar.lookup_contact",
-  description: "Look up the authoritative NetworkRadar record. Adapter not built in R1 (no verified API contract from the deployed app).",
+  description: "Read-only lookup in NetworkRadar (system of record). VERIFIED only on an exact email match of the canonical record.",
   connector: "networkradar",
   requiredScopes: ["networkradar.read"],
   riskTier: "read",
@@ -85,12 +85,17 @@ export const networkRadarLookup: ToolDef = {
   rateLimitPerMin: 60,
   approvalPolicy: "never",
   inputSchema: z.object({ email: z.string().email().optional(), name: z.string().optional() }),
-  outputSchema: z.object({ found: z.boolean(), personId: z.string().optional() }),
-  timeoutMs: 10_000,
+  outputSchema: z.object({ found: z.boolean(), match: z.enum(["verified", "candidate", "none"]), personId: z.string().optional(), recordIds: z.array(z.string()), candidates: z.array(z.object({ id: z.string(), name: z.string() })) }),
+  timeoutMs: 15_000,
   retry: { max: 2, backoffMs: 300 },
   auditFields: [],
   summarize: () => "Look up contact in NetworkRadar",
-  execute: notImplemented("networkradar"),
+  async execute(ctx, i: { email?: string; name?: string }) {
+    const nr = ctx.services.networkradar;
+    if (!nr) throw new DomainError("permanent_connector_unavailable", "NetworkRadar client is not configured in this runtime");
+    const r = await nr.lookupContact(i);
+    return { found: r.match === "verified", match: r.match, personId: r.personId, recordIds: r.recordIds, candidates: r.candidates };
+  },
 };
 
 export const taskCreate: ToolDef = {

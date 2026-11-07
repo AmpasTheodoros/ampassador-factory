@@ -1,17 +1,31 @@
 import Link from "next/link";
-import { runtime, WORKSPACE_ID } from "@/lib/runtime";
+import { listJobs } from "@aaf/jobs";
+import { withApp } from "@/lib/runtime";
 import { submitMessage } from "@/lib/actions";
-import { Card, PageTitle, Empty, Badge, DemoBadge, Provenance, StatusBadge, fmt } from "@/components/ui";
+import { Card, PageTitle, Empty, Badge, DemoBadge, OriginBadge, Provenance, StatusBadge, fmt, type Origin } from "@/components/ui";
+
+type Why = {
+  reasons: string[]; flags: string[]; confidence: number; urgency: number; impact: number; effort: number;
+  classification?: { by: "rules" | "ai" | "ai+rules"; model: string | null; location: string | null };
+  facts?: { label: string; value: string; status: "verified" | "unverified"; source: string; recordId?: string }[];
+};
+
+export const maxDuration = 60; // triage and approval actions run model calls and jobs
 
 export default async function Inbox({ searchParams }: { searchParams: Promise<{ item?: string; error?: string; dup?: string }> }) {
   const { item, error, dup } = await searchParams;
-  const rt = await runtime();
-  const rows = await rt.store.listInbox(WORKSPACE_ID);
-  const sel = item ? await rt.store.getInboxItem(WORKSPACE_ID, item) : undefined;
-  const rec = sel ? await rt.store.recommendationForInbox(WORKSPACE_ID, item!) : undefined;
-  const approvals = sel ? (await rt.store.listApprovals(WORKSPACE_ID)).filter((a) => (a["sourceContext"] as { inboxItemId?: string }).inboxItemId === item) : [];
-  const why = rec?.["why"] as { reasons: string[]; flags: string[]; confidence: number; urgency: number; impact: number; effort: number } | undefined;
+  const data = await withApp(async (app) => {
+    const rows = await app.store.listInbox(app.workspaceId);
+    const sel = item ? await app.store.getInboxItem(app.workspaceId, item) : undefined;
+    const rec = sel ? await app.store.recommendationForInbox(app.workspaceId, item!) : undefined;
+    const approvals = sel ? (await app.store.listApprovals(app.workspaceId)).filter((a) => (a["sourceContext"] as { inboxItemId?: string }).inboxItemId === item) : [];
+    const jobs = sel ? (await listJobs(app.store.db, app.workspaceId, undefined, 50)).filter((j) => (j.input as { inboxItemId?: string }).inboxItemId === item) : [];
+    return { rows, sel, rec, approvals, jobs };
+  });
+  const { rows, sel, rec, approvals, jobs } = data;
+  const why = rec?.["why"] as Why | undefined;
   const payload = sel?.["eventPayload"] as { fromEmail: string; fromName: string | null; subject: string; body: string } | undefined;
+  const job = jobs[0];
 
   return (
     <>
@@ -52,16 +66,33 @@ export default async function Inbox({ searchParams }: { searchParams: Promise<{ 
           {!sel ? <Empty>Select an item to see the classification, reasoning and draft.</Empty> : (
             <>
               <Card title="Message (untrusted content, shown as plain text)">
-                <p className="text-sm"><b>{payload!.fromName ?? payload!.fromEmail}</b> <span className="muted">&lt;{payload!.fromEmail}&gt; · {fmt(sel["eventOccurredAt"])} · source {String(sel["eventSource"])}</span></p>
+                <p className="text-sm"><b>{payload!.fromName ?? payload!.fromEmail}</b> <span className="muted">&lt;{payload!.fromEmail}&gt; · {fmt(sel["eventOccurredAt"])} · source {String(sel["eventSource"])}</span> <OriginBadge kind="unverified" detail="sender from header" /></p>
                 <p className="mt-1 font-medium">{payload!.subject}</p>
                 <pre className="mt-2 whitespace-pre-wrap text-sm">{payload!.body}</pre>
               </Card>
+              {job && ["queued", "running", "dead", "failed"].includes(job.status) && (
+                <Card title="Background job">
+                  <p className="text-sm"><StatusBadge s={job.status} /> triage job, attempt {job.attempts}/{job.maxAttempts}{job.error ? ` · ${job.error}` : ""} <Link className="btn ml-2" href="/operations">Operations</Link></p>
+                </Card>
+              )}
               {rec && why && (
                 <Card title="Brain recommendation">
-                  <div className="flex flex-wrap items-center gap-2"><h3 className="font-semibold">{String(rec["title"])}</h3><Badge tone="good">{String(rec["actionClass"]).replace("_", " ")}</Badge></div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="font-semibold">{String(rec["title"])}</h3>
+                    <Badge tone="good">{String(rec["actionClass"]).replace("_", " ")}</Badge>
+                    {why.classification && <OriginBadge kind={why.classification.by as Origin} detail={why.classification.model ? `${why.classification.model} (${why.classification.location})` : undefined} />}
+                  </div>
                   <p className="muted mt-1 text-sm">confidence {Math.round(why.confidence * 100)}% · urgency {why.urgency}/10 · impact {why.impact}/10 · effort {why.effort}/10 · score {Number(rec["score"])}</p>
                   <ul className="mt-2 list-disc pl-5 text-sm">{why.reasons.map((r, i) => <li key={i}>{r}</li>)}</ul>
                   {why.flags.length > 0 && <ul className="mt-2 text-sm" style={{ color: "var(--warn)" }}>{why.flags.map((f, i) => <li key={i}>Warning: {f}</li>)}</ul>}
+                  {why.facts && (
+                    <div className="mt-3">
+                      <h4 className="muted text-xs font-semibold uppercase">What is known about the sender</h4>
+                      <ul className="mt-1 space-y-1 text-sm">
+                        {why.facts.map((f, i) => <li key={i}>{f.label}: <span className="font-mono">{f.value}</span> <OriginBadge kind={f.status} detail={f.source} />{f.recordId ? <span className="muted font-mono text-xs"> #{f.recordId}</span> : null}</li>)}
+                      </ul>
+                    </div>
+                  )}
                   <details className="mt-2 text-xs"><summary className="muted cursor-pointer">Provenance</summary><Provenance items={rec["provenance"] as never} /></details>
                 </Card>
               )}
@@ -70,7 +101,7 @@ export default async function Inbox({ searchParams }: { searchParams: Promise<{ 
                   <ul className="space-y-2 text-sm">
                     {approvals.map((a) => (
                       <li key={String(a["id"])} className="flex flex-wrap items-center justify-between gap-2">
-                        <span>{String(a["summary"])}</span>
+                        <span>{String(a["summary"])} <OriginBadge kind={(a["sourceContext"] as { draftSource?: string }).draftSource === "llm" ? "ai" : "template"} detail={(a["sourceContext"] as { draftModel?: string }).draftModel ?? undefined} /></span>
                         <span className="flex items-center gap-2"><StatusBadge s={String(a["status"])} /><Link className="btn" href={`/approvals?id=${a["id"]}`}>Review</Link></span>
                       </li>
                     ))}

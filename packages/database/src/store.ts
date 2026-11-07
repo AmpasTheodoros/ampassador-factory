@@ -1,9 +1,9 @@
 import { newId, type EventEnvelope, type ApprovalStatus } from "@aaf/core";
-import type { Db, Row } from "./db";
+import type { Queryable, Row } from "./db";
 
 /** Every method takes workspaceId and scopes by it: app-level isolation on top of RLS. */
 export class Store {
-  constructor(public readonly db: Db) {}
+  constructor(public readonly db: Queryable) {}
 
   async ensureWorkspace(id: string, name: string, ownerUserId: string, kind: "personal" | "client" = "personal") {
     await this.db.query(`insert into workspaces(id,name,kind) values ($1,$2,$3) on conflict do nothing`, [id, name, kind]);
@@ -149,6 +149,14 @@ export class Store {
     return r[0]?.s ?? 0;
   }
 
+  async costSummary(ws: string): Promise<{ provider: string; model: string | null; calls: number; tokensIn: number; tokensOut: number; costEur: number }[]> {
+    return this.db.query(`select provider, model, count(*)::int as calls, coalesce(sum(tokens_in),0)::int as tokens_in, coalesce(sum(tokens_out),0)::int as tokens_out, coalesce(sum(cost_eur),0)::float8 as cost_eur
+      from cost_events where workspace_id=$1 and created_at >= date_trunc('month', now()) group by provider, model order by cost_eur desc`, [ws]);
+  }
+  async toolCallCounts(ws: string): Promise<Record<string, number>> {
+    const r = await this.db.query<{ outcome: string; n: number }>(`select outcome, count(*)::int as n from tool_calls where workspace_id=$1 group by outcome`, [ws]);
+    return Object.fromEntries(r.map((x) => [x.outcome, x.n]));
+  }
   async createRun(ws: string, workflow: string, input: unknown, correlationId?: string) {
     const id = newId();
     await this.db.query(`insert into workflow_runs(id,workspace_id,workflow,status,correlation_id,input) values ($1,$2,$3,'queued',$4,$5)`, [id, ws, workflow, correlationId ?? null, JSON.stringify(input ?? {})]);
@@ -166,11 +174,34 @@ export class Store {
     return this.db.query(`select * from workflow_runs where workspace_id=$1 order by created_at desc limit $2`, [ws, limit]);
   }
 
+  // ---- identity / tenancy (run as the verified user; roles always come from `memberships`, never from token metadata)
+  async provisionWorkspace(name: string): Promise<string> {
+    const r = await this.db.query<{ appProvisionWorkspace: string }>(`select app_provision_workspace($1)`, [name]);
+    return r[0]!.appProvisionWorkspace;
+  }
+  async memberRole(ws: string, userId: string): Promise<"owner" | "admin" | "member" | "viewer" | null> {
+    const r = await this.db.query<{ role: "owner" | "admin" | "member" | "viewer" }>(`select role from memberships where workspace_id=$1 and user_id=$2`, [ws, userId]);
+    return r[0]?.role ?? null;
+  }
+  async firstWorkspaceFor(userId: string): Promise<{ id: string; role: string } | null> {
+    const r = await this.db.query<{ workspaceId: string; role: string }>(`select workspace_id, role from memberships where user_id=$1 order by role, workspace_id limit 1`, [userId]);
+    return r[0] ? { id: r[0].workspaceId, role: r[0].role } : null;
+  }
+  /** Distributed fixed-window limiter; true = allowed. */
+  async rateHit(key: string, max: number, windowSeconds: number): Promise<boolean> {
+    const r = await this.db.query<{ appRateHit: boolean }>(`select app_rate_hit($1,$2,$3)`, [key, max, windowSeconds]);
+    return r[0]!.appRateHit;
+  }
+
   async upsertConnection(ws: string, connector: string, status: string, detail: string, scopes: string[] = []) {
     await this.db.query(
       `insert into integration_connections(id,workspace_id,connector,status,scopes,detail) values ($1,$2,$3,$4,$5,$6)
        on conflict (workspace_id,connector) do update set status=excluded.status, detail=excluded.detail, scopes=excluded.scopes, updated_at=now()`,
       [newId(), ws, connector, status, scopes, detail]);
+  }
+  /** Insert only if absent; never overwrites a status established by a health check. */
+  async ensureConnection(ws: string, connector: string, status: string, detail: string) {
+    await this.db.query(`insert into integration_connections(id,workspace_id,connector,status,scopes,detail) values ($1,$2,$3,$4,'{}',$5) on conflict (workspace_id,connector) do nothing`, [newId(), ws, connector, status, detail]);
   }
   async listConnections(ws: string): Promise<Row[]> {
     return this.db.query(`select * from integration_connections where workspace_id=$1 order by connector`, [ws]);

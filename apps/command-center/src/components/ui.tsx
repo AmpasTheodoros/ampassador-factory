@@ -57,3 +57,18 @@ export function Provenance({ items }: { items: { source: string; recordId?: stri
   );
 }
 export const fmt = (iso: unknown) => (iso ? new Date(String(iso)).toISOString().slice(0, 16).replace("T", " ") + "Z" : "-");
+
+export type Origin = "ai" | "rules" | "ai+rules" | "template" | "unverified" | "verified" | "demo";
+const ORIGIN: Record<Origin, { label: string; tone: Tone; title: string }> = {
+  ai: { label: "AI-generated", tone: "warn", title: "Produced by a language model. Treat as a suggestion." },
+  "ai+rules": { label: "AI + rules agree", tone: "good", title: "A language model and the deterministic rules reached the same result." },
+  rules: { label: "Rule-based", tone: "neutral", title: "Deterministic keyword rules. No model involved." },
+  template: { label: "Template-generated", tone: "neutral", title: "Filled from a fixed template. No model involved." },
+  unverified: { label: "Unverified", tone: "warn", title: "Not confirmed against a system of record." },
+  verified: { label: "Verified record", tone: "good", title: "Matched an exact record in the system of record." },
+  demo: { label: "DEMO", tone: "demo", title: "Synthetic example data." },
+};
+export function OriginBadge({ kind, detail }: { kind: Origin; detail?: string }) {
+  const o = ORIGIN[kind];
+  return <span title={o.title}><Badge tone={o.tone}>{o.label}{detail ? ` · ${detail}` : ""}</Badge></span>;
+}

@@ -1,48 +1,97 @@
 import "server-only";
-import { Db, Store } from "@aaf/database";
-import { ToolGateway, BUILTIN_TOOLS } from "@aaf/tools";
-import { ModelRouter, OpenAICompatProvider, type BrainDeps, type LlmProvider } from "@aaf/brain";
+import { redirect } from "next/navigation";
+import { headers } from "next/headers";
+import { Store, type Queryable } from "@aaf/database";
+import { DomainError } from "@aaf/core";
+import { buildBrainDeps, networkRadarFromEnv } from "@aaf/jobs";
+import type { BrainDeps, ModelRouter } from "@aaf/brain";
+import type { ToolGateway } from "@aaf/tools";
+import { getEnv } from "./config";
+import { getDb } from "./db";
+import { getAuth } from "./auth";
+import type { AuthUser } from "./auth/types";
+import { getTelemetry, runtimeEnv } from "./services";
 
-export const WORKSPACE_ID = "00000000-0000-4000-8000-000000000001";
-export const OWNER_USER_ID = "00000000-0000-4000-8000-0000000000a1";
+export type Role = "owner" | "admin" | "member" | "viewer";
 
-export interface Runtime {
-  db: Db;
+export interface App {
+  user: AuthUser;
+  workspaceId: string;
+  role: Role;
   store: Store;
   gateway: ToolGateway;
   deps: BrainDeps;
-  llm: { configured: boolean; location?: string; model?: string };
+  router: ModelRouter;
 }
 
-const g = globalThis as unknown as { __aaf?: Promise<Runtime> };
+const DEFAULT_CONNECTORS: [string, string][] = [
+  ["gmail", "Adapter not built. Paste messages into the Inbox; approved replies are exported, not sent."],
+  ["google_calendar", "Adapter not built. Meetings are not shown."],
+  ["networkradar", "Not checked yet."],
+  ["github", "Not connected."],
+  ["posthog", "Not connected."],
+];
 
-async function boot(): Promise<Runtime> {
-  const dir = process.env.AAF_DATA_DIR ?? ".data/pglite";
-  const db = await Db.open({ dataDir: process.env.AAF_DATA_DIR === ":memory:" ? undefined : dir });
-  const store = new Store(db);
-  await store.ensureWorkspace(WORKSPACE_ID, "Theodoros (personal)", OWNER_USER_ID);
-  // Honest connector status: nothing is connected in R1. Rows are only written when absent.
-  const existing = new Set((await store.listConnections(WORKSPACE_ID)).map((c) => c["connector"]));
-  const defaults: [string, string][] = [
-    ["gmail", "Adapter not built (R2). Paste messages into the Inbox; approved replies are exported, not sent."],
-    ["google_calendar", "Adapter not built (R2). Meetings are not shown."],
-    ["networkradar", "Adapter not built (R2): no verified API contract reachable from the deployed app yet. Contacts are not verified."],
-    ["github", "Not connected."],
-    ["posthog", "Not connected."],
-  ];
-  for (const [c, d] of defaults) if (!existing.has(c)) await store.upsertConnection(WORKSPACE_ID, c, "not_connected", d);
-
-  const providers: LlmProvider[] = [];
-  const base = process.env.AAF_LLM_BASE_URL;
-  const model = process.env.AAF_LLM_MODEL;
-  const loc = process.env.AAF_LLM_LOCATION === "local" ? "local" : "cloud";
-  if (base && model) providers.push(new OpenAICompatProvider("configured-llm", loc, { baseUrl: base, model, apiKey: process.env.AAF_LLM_API_KEY }));
-  const router = new ModelRouter(store, providers);
-  const gateway = new ToolGateway(store, BUILTIN_TOOLS);
-  const deps: BrainDeps = { store, gateway, router, ownerName: process.env.AAF_OWNER_NAME ?? "Theodoros" };
-  return { db, store, gateway, deps, llm: { configured: providers.length > 0, location: providers.length ? loc : undefined, model: providers.length ? model : undefined } };
+/** Origin check beyond Next's own: mutating requests must come from the configured origin (or the request host in dev). */
+export async function assertSameOrigin() {
+  const env = getEnv();
+  const h = await headers();
+  const origin = h.get("origin");
+  if (!origin) throw new DomainError("csrf", "Missing Origin header");
+  const expected = env.AAF_APP_ORIGIN ?? `${h.get("x-forwarded-proto") ?? "http"}://${h.get("x-forwarded-host") ?? h.get("host")}`;
+  if (origin !== new URL(expected).origin) throw new DomainError("csrf", "Cross-origin request refused");
 }
 
-export function runtime(): Promise<Runtime> {
-  return (g.__aaf ??= boot());
+export async function currentUser(): Promise<AuthUser | null> {
+  const auth = await getAuth();
+  return auth ? auth.getUser() : null;
+}
+
+export interface WithAppOptions {
+  mutating?: boolean;
+  noRedirect?: boolean;
+}
+
+/**
+ * One request = one transaction as the verified end user, so RLS is enforced for everything inside `fn`.
+ * Redirects must be issued OUTSIDE `fn` (a throw inside rolls the transaction back).
+ * Model spend is deferred and written in its own transaction afterwards, so it is never lost to a rollback.
+ */
+export async function withApp<T>(fn: (app: App) => Promise<T>, opts: WithAppOptions & { noRedirect: true }): Promise<T | null>;
+export async function withApp<T>(fn: (app: App) => Promise<T>, opts?: WithAppOptions): Promise<T>;
+export async function withApp<T>(fn: (app: App) => Promise<T>, opts: WithAppOptions = {}): Promise<T | null> {
+  if (opts.mutating) await assertSameOrigin();
+  const user = await currentUser();
+  if (!user) {
+    if (opts.noRedirect) return null;
+    redirect("/login");
+  }
+  const env = getEnv();
+  const tel = await getTelemetry();
+  const { database } = await getDb();
+  let flush: (() => Promise<void>) | undefined;
+  try {
+    return await database.run({ kind: "user", userId: user.id }, async (q: Queryable) => {
+      const store = new Store(q);
+      if (!(await store.rateHit(`req:${user.id}`, opts.mutating ? 60 : 240, 60))) throw new DomainError("rate_limited", "Too many requests; slow down");
+      let m = await store.firstWorkspaceFor(user.id);
+      if (!m) {
+        const id = await store.provisionWorkspace(env.AAF_OWNER_NAME);
+        for (const [c, d] of DEFAULT_CONNECTORS) await store.ensureConnection(id, c, "not_connected", d);
+        m = { id, role: "owner" };
+      }
+      const ws = m.id;
+      const { deps, router } = buildBrainDeps(store, runtimeEnv(), networkRadarFromEnv(runtimeEnv()), (e) => tel.modelCall({ ...e, model: e.modelLabel }));
+      flush = async () => {
+        if (router.pendingCosts().length === 0) return;
+        await database.run({ kind: "service", workspaceId: ws, reason: "cost-flush" }, (sq) => router.flushCosts(new Store(sq)).then(() => undefined));
+      };
+      return fn({ user, workspaceId: ws, role: m.role as Role, store, gateway: deps.gateway, deps, router });
+    });
+  } catch (e) {
+    if (!(e as { digest?: string })?.digest?.startsWith?.("NEXT_")) tel.error(e, { where: "withApp" });
+    throw e;
+  } finally {
+    if (flush) await flush().catch((e) => tel.error(e, { where: "cost-flush" }));
+  }
 }

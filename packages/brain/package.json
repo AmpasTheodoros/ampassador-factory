@@ -13,6 +13,8 @@
     "@aaf/core": "workspace:*",
     "@aaf/database": "workspace:*",
     "@aaf/tools": "workspace:*",
+    "@ai-sdk/openai-compatible": "^3.0.87",
+    "ai": "^7.0.165",
     "zod": "^4.1.0"
   }
 }

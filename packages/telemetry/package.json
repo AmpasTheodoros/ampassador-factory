@@ -1,0 +1,17 @@
+{
+  "name": "@aaf/telemetry",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "@sentry/node": "^11.11.0",
+    "langfuse": "^3.39.2",
+    "posthog-node": "^5.63.1"
+  }
+}

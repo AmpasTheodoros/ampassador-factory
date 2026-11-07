@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { generateBrief, type BriefItem } from "@aaf/brain";
-import { runtime, WORKSPACE_ID } from "@/lib/runtime";
+import { withApp } from "@/lib/runtime";
 import { completeTask, loadDemoData } from "@/lib/actions";
 import { Card, PageTitle, Empty, Badge, DemoBadge, Provenance, StatusBadge, fmt } from "@/components/ui";
 
@@ -22,10 +22,11 @@ function Item({ it, big }: { it: BriefItem; big?: boolean }) {
 }
 
 export default async function Overview() {
-  const rt = await runtime();
-  const brief = await generateBrief(rt.deps, WORKSPACE_ID);
-  const tasks = await rt.store.listTasks(WORKSPACE_ID, "open");
-  const conns = await rt.store.listConnections(WORKSPACE_ID);
+  const { brief, tasks, conns } = await withApp(async (app) => ({
+    brief: await generateBrief(app.deps, app.workspaceId),
+    tasks: await app.store.listTasks(app.workspaceId, "open"),
+    conns: await app.store.listConnections(app.workspaceId),
+  }));
   return (
     <>
       <PageTitle title="Today" sub={`Brief generated ${fmt(brief.generatedAt)} from the records in this workspace only.`} />

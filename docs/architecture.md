@@ -1,55 +1,59 @@
 # Architecture
 
-Status: R1 implemented. R2-R4 planned. See `roadmap.md`.
+Status: **R1.5 implemented locally and tested; not deployed.** R2-R4 planned (`roadmap.md`).
 
 ## Flow
 
 ```
 manual input / (future) connectors
   -> makeEvent (typed envelope, dedupeKey)  -> source_events (unique per workspace+dedupeKey)
-  -> inbox_items
-  -> Brain: classify (ordered rule table) -> score -> recommendation (why + provenance)
-  -> draft (template, or LLM via ModelRouter, output validated)
-  -> ToolGateway.invoke  -> denied | executed (read/draft/low-write) | queued_for_approval
-  -> human decision (owner/admin only) -> ToolGateway.execute
-        (re-hash payload, re-check expiry/scopes/schema, bounded retry, receipt per attempt)
-  -> audit_log (append-only) + follow-up task
+  -> inbox_items  -> durable job `w1.triage` (idempotent key triage:<item>)
+  -> Brain: rules classify  +  optional model classify (structured output) -> fixed reconciliation policy
+     -> scores/class/why/facts(verified|unverified)/provenance
+  -> draft: model (validated, no links/addresses) or template
+  -> ToolGateway.invoke -> denied | executed | queued_for_approval   (job parks: waiting_approval)
+  -> human decision (owner/admin) -> ToolGateway.execute (re-hash, revalidate, bounded retry, receipts)
+  -> follow-up task, audit_log (append-only), job resumes with the outcome and finishes
 ```
+
+Every database interaction is a transaction as `authenticated` (a user request), `anon` (pre-login) or `aaf_service` (pinned to one workspace). See `security-and-approvals.md`.
 
 ## Packages
 
 | Package | Responsibility | Tests |
 |---|---|---|
-| `@aaf/core` | ids, stable hashing, event envelope, risk tiers, errors | `core.test.ts` |
-| `@aaf/database` | SQL migrations (`supabase/migrations`), PGlite runtime (same SQL as Supabase), `Store` | `rls.test.ts` |
-| `@aaf/tools` | tool gateway + approval lifecycle, builtin tools | `gateway.test.ts` |
-| `@aaf/brain` | classifier, scoring, drafts, model router, W1 and W4 workflows, eval set | `brain.test.ts` |
-| `@aaf/registry` | departments A-N, agents, skills, blueprints (readiness is tested) | `registry.test.ts` |
-| `apps/command-center` | Next.js UI, server actions, session auth | `token.test.ts`, Playwright `e2e/flow.spec.ts` |
+| `@aaf/core` | ids, stable hashing, event envelope, risk tiers, errors | 3 |
+| `@aaf/database` | SQL migrations, `Database` abstraction (`PgDatabase` pool for Supabase, `PgliteDatabase` for dev/tests), `Store`, migration runner + CLI | 38 |
+| `@aaf/tools` | tool gateway + approval lifecycle, builtin tools | 19 |
+| `@aaf/brain` | classifier, AI SDK provider, model router (policy, budget, redaction), drafts, W1/W4, provider config, eval set | 36 (+1 opt-in) |
+| `@aaf/jobs` | durable queue, runner, handlers, dispatchers (local, Trigger.dev), NetworkRadar status refresh | 28 |
+| `@aaf/integrations` | NetworkRadar read-only MCP adapter | 10 (+1 opt-in) |
+| `@aaf/telemetry` | sanitiser, sinks (Langfuse, Sentry, PostHog), no-op default | 9 |
+| `@aaf/registry` | departments A-N, agents, skills, blueprints | 7 |
+| `apps/command-center` | Next.js UI, Supabase/local auth, request context, actions | 16 + 7 E2E |
 
-Spec packages not created yet because there is nothing real to put in them: `knowledge`, `integrations`, `workflows` (Trigger.dev), `media`, `approvals` (lives in `tools`), `telemetry`, `ui`, `workers/*`. See `decision-log.md`.
-
-## Connector matrix (verified in this repo, not assumed)
+## Connector matrix (what is actually true)
 
 | Connector | State | Detail |
 |---|---|---|
-| NetworkRadar | Not connected | An MCP server exists in the author's Claude environment, but no API contract reachable from the deployed web app has been verified. Tool `networkradar.lookup_contact` is registered and gated; the UI says "Needs connection". R2: establish the real integration mechanism, else typed contract + manual bridge. |
-| Gmail | Not connected | `gmail.create_draft` / `gmail.send` registered, adapters not built. W1 falls back to `email.export_reply_draft` (approved text exported as .eml, never claimed as sent). |
-| Google Calendar | Not connected | Not built. Brief says meetings are not shown. |
-| GitHub, PostHog, Metricool/Buffer, Drive | Not built | Planned R2-R4. |
-| LLM | Optional | Any OpenAI-compatible endpoint via `AAF_LLM_*`. Unit-tested against a fake `fetch`; **not smoke-tested against a real provider**. Without it, drafts are deterministic templates. |
+| Supabase Postgres | **Code ready, never run against a live project** | `PgDatabase` + migrations CLI + roles script. Proven over the pg wire protocol on an embedded server. |
+| Supabase Auth | **Code ready, unverified live** | Provider tested with a fake client. Development uses a separate local provider. |
+| Model provider | **Code ready, never called a real provider** | AI SDK (`ai` 7.x) via AI Gateway string or OpenAI-compatible endpoint. Tested through the SDK's own mock model. Opt-in smoke test exists (`AAF_SMOKE_AI=1`); no key/local server was available here. |
+| NetworkRadar | **Blocked on a credential** | Adapter proven against a local mock. See `networkradar-connectivity.md`. |
+| Trigger.dev | **Scaffold only** | Dispatcher + task typed against SDK 4.x; no project, never run. Local engine is the tested path. |
+| Langfuse / Sentry / PostHog | **Optional, constructed only when credentialled** | Sanitiser and sinks unit-tested with fakes; not run against the services. |
+| Gmail, Google Calendar, GitHub, Drive, Metricool/Buffer | **Not built** | Tools exist only as gated stubs (`gmail.*`). Replies are exported as `.eml`, never sent. |
 
-## Acceptance criteria (R1) and where each is proven
+## Acceptance criteria and where each is proven
 
-1. Unconfigured production refuses sign-in; wrong password rejected; routes need a session. (`e2e` test 1, `token.test.ts`)
-2. A pasted message becomes an inbox item with an intent, class, score, reasons and provenance. (`brain.test.ts` W1, `e2e` test 2)
-3. NetworkRadar absence is stated on the recommendation, never faked. (`brain.test.ts`, `e2e`)
-4. Replying produces an approval; nothing executes before a human decision, and a rejected/expired/unapproved item cannot execute. (`gateway.test.ts`)
-5. The approved payload cannot change (DB trigger + execution-time hash check). (`gateway.test.ts`)
-6. Retries are bounded with backoff, each attempt has a receipt, exhausted retries dead-letter, operator replay does not double-send. (`gateway.test.ts`)
-7. Duplicate paste creates no second event/item/approval. (`rls.test.ts`, `brain.test.ts`)
-8. Prompt-injection text cannot change recipient, tools or approval state. (`brain.test.ts`, `e2e` test 3)
-9. `local_only` never reaches a cloud provider; budget stops model calls; `redact_then_cloud` masks identifiers. (`brain.test.ts`)
-10. Two workspaces are isolated by RLS; viewers cannot write or approve; audit log is append-only. (`rls.test.ts`)
-11. The daily brief ranks only stored items, gives provenance and stale warnings, and says so when empty. (`brain.test.ts`, `e2e`)
-12. Skills/departments cannot be marked live without existing tests. (`registry.test.ts`)
+R1 criteria 1-12 still hold (see git history of this file); the R1.5 additions:
+
+13. Requests run as non-owner roles and RLS is enforced end-to-end, including cross-tenant read/write/approve/audit/job attempts. (`production-path.test.ts` x2 drivers, `jobs.test.ts`, E2E two-user test)
+14. Production start fails closed without configuration; the test-only mode cannot look ready. (`config.test.ts`, manual prod start, E2E `/api/ready`)
+15. Sessions expire and are revocable; login is rate limited; metadata cannot grant roles. (`auth.test.ts`, E2E)
+16. Model calls are bounded and accounted: schema-validated, timeout/failure fall back to rules/templates, worst-case budget refusal, `local_only` fail-closed, redaction, spend survives rollback. (`ai.test.ts`)
+17. Hostile content cannot steer drafts (found and fixed: copied addresses). (`ai.test.ts`, E2E)
+18. UI distinguishes AI / rules / template / unverified / verified. (E2E asserts the labels; nothing is "verified" without an exact record)
+19. Jobs: idempotent enqueue, lease/crash recovery, backoff, dead-letter, cancel, replay, approval pause/resume, workspace pinning. (`jobs.test.ts`, `handlers.test.ts`)
+20. Migrations are reproducible and checksummed; the CLI works over the wire. (`production-path.test.ts`, `migrate-cli.test.ts`)
+21. Telemetry cannot leak secrets/PII and cannot break the app. (`telemetry.test.ts`)

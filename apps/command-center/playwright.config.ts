@@ -11,6 +11,6 @@ export default defineConfig({
     port: PORT,
     reuseExistingServer: false,
     timeout: 60_000,
-    env: { AAF_DATA_DIR: ":memory:", AAF_ADMIN_PASSWORD: "e2e-password", AAF_SESSION_SECRET: "e2e-secret", NODE_ENV: "production" },
+    env: { AAF_DATA_DIR: ":memory:", AAF_RUNTIME_MODE: "e2e", NODE_ENV: "production", AAF_DEV_EMAIL: "owner@example.test", AAF_DEV_PASSWORD: "owner-password-1", AAF_DEV_EMAIL_2: "other@example.test", AAF_DEV_PASSWORD_2: "other-password-2" },
   },
 });

@@ -7,10 +7,17 @@
   "types": "./src/index.ts",
   "scripts": {
     "test": "vitest run --passWithNoTests",
-    "typecheck": "tsc -p ."
+    "typecheck": "tsc -p .",
+    "db:migrate": "tsx scripts/migrate.ts"
   },
   "dependencies": {
     "@aaf/core": "workspace:*",
-    "@electric-sql/pglite": "^0.5.0"
+    "@electric-sql/pglite": "^0.5.0",
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite-socket": "^0.2.18",
+    "@types/pg": "^8.23.1",
+    "tsx": "^4.23.15"
   }
 }

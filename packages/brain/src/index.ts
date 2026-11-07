@@ -5,3 +5,6 @@ export * from "./workflows";
 export * from "./brief";
 export * from "./demo";
 export * from "./evals";
+export * from "./ai";
+export * from "./ai-classify";
+export * from "./providers";

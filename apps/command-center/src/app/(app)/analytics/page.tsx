@@ -1,12 +1,16 @@
-import { runtime, WORKSPACE_ID } from "@/lib/runtime";
+import { withApp } from "@/lib/runtime";
 import { Card, PageTitle, Empty } from "@/components/ui";
 
 export default async function Analytics() {
-  const rt = await runtime();
-  const ws = await rt.store.getWorkspace(WORKSPACE_ID);
-  const spend = await rt.store.monthSpendEur(WORKSPACE_ID);
+  const { ws, spend, inbox, approvals, calls, llm } = await withApp(async (app) => ({
+    ws: await app.store.getWorkspace(app.workspaceId),
+    spend: await app.store.monthSpendEur(app.workspaceId),
+    inbox: await app.store.listInbox(app.workspaceId),
+    approvals: await app.store.listApprovals(app.workspaceId),
+    calls: await app.store.listToolCalls(app.workspaceId, 1000),
+    llm: app.router.available(),
+  }));
   const budget = Number(ws?.["monthlyBudgetEur"] ?? 0);
-  const [inbox, approvals, calls] = await Promise.all([rt.store.listInbox(WORKSPACE_ID), rt.store.listApprovals(WORKSPACE_ID), rt.store.listToolCalls(WORKSPACE_ID, 1000)]);
   const real = inbox.filter((i) => !i["isDemo"]);
   const by = (s: string) => approvals.filter((a) => a["status"] === s).length;
   const denied = calls.filter((c) => c["outcome"] === "denied").length;
@@ -26,7 +30,7 @@ export default async function Analytics() {
         <Card title="AI spend this month">
           <p className="text-sm">{spend.toFixed(2)} of {budget.toFixed(2)} EUR budget {spend >= budget ? "(model calls are stopped)" : ""}</p>
           <progress className="mt-2 w-full" value={Math.min(spend, budget)} max={budget || 1} aria-label="Budget used" />
-          {!rt.llm.configured && <p className="muted mt-2 text-xs">No LLM provider configured: drafts are deterministic templates and cost nothing.</p>}
+          {!llm && <p className="muted mt-2 text-xs">No LLM provider configured: drafts are deterministic templates and cost nothing.</p>}
         </Card>
         <Card title="Guardrail activity">
           <p className="text-sm">{denied} tool call(s) were denied (missing connector, scope, invalid input or rate limit).</p>

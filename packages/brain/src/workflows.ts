@@ -2,7 +2,8 @@ import { z } from "zod";
 import { DomainError, makeEvent, payloadHash, type Provenance } from "@aaf/core";
 import type { Store } from "@aaf/database";
 import type { ToolGateway, Actor } from "@aaf/tools";
-import { classify, priorityScore, type IntentRule } from "./classify";
+import type { IntentRule } from "./classify";
+import { classifyWithAi, scoreFor } from "./ai-classify";
 import { draftReply } from "./draft";
 import type { ModelRouter } from "./llm";
 
@@ -64,36 +65,47 @@ export async function triageInboxItem(deps: BrainDeps, ws: string, inboxItemId: 
   await store.updateRun(ws, runId, { status: "running" });
   try {
     const payload = item["eventPayload"] as { fromEmail: string; fromName: string | null; subject: string; body: string };
-    const cls = classify(`${payload.subject}\n${payload.body}`, deps.rules);
+    const cls = await classifyWithAi(deps.router, ws, payload.subject, payload.body, deps.rules);
     const rule = cls.rule;
     const retrievedAt = now(deps).toISOString();
     const eventId = item["eventId"] as string;
 
     // Contact resolution: NetworkRadar is the source of truth. We ask through the gateway; honest result either way.
     const lookup = await gateway.invoke({ workspaceId: ws, actor: brainActor, toolId: "networkradar.lookup_contact", input: { email: payload.fromEmail } }).catch((e: Error) => ({ status: "denied" as const, code: "error" as const, reason: e.message }));
+    const lk = lookup.status === "executed" ? (lookup.output as { match: "verified" | "candidate" | "none"; personId?: string; recordIds: string[]; candidates: { id: string; name: string }[] }) : undefined;
     const contactNote =
-      lookup.status === "executed" ? "Contact matched in NetworkRadar" :
+      lk?.match === "verified" ? `Contact VERIFIED against NetworkRadar record ${lk.personId} (exact email match)` :
+      lk?.match === "candidate" ? `NetworkRadar has ${lk.candidates.length} possible name match(es) but none matches this email: treated as UNVERIFIED` :
+      lk?.match === "none" ? "No NetworkRadar record found for this sender: UNVERIFIED" :
       lookup.status === "denied" ? `Contact NOT verified against NetworkRadar (${lookup.reason}). Identity taken from the message header only.` : "Contact lookup queued";
 
     const provenance: Provenance[] = [
       { source: "manual_input", recordId: eventId, retrievedAt, kind: opts.isDemo ? "demo" : "record", note: `Message from ${payload.fromEmail} received ${item["eventOccurredAt"] as string}` },
-      { source: "networkradar", retrievedAt, kind: "inference", note: contactNote },
+      { source: "networkradar", recordId: lk?.match === "verified" ? lk.personId : undefined, retrievedAt, kind: lk?.match === "verified" ? "record" : "inference", note: contactNote },
     ];
 
-    let confidence = rule.confidence;
-    const reasons = [rule.label, cls.matched ? `Matched phrase: "${cls.matched}"` : "No rule matched the text", contactNote];
+    let confidence = cls.confidence;
+    const reasons = [rule.label, cls.rulesMatched ? `Rule matched phrase: "${cls.rulesMatched}"` : "No rule matched the text", contactNote];
+    if (cls.rationale) reasons.push(`Model rationale (AI-generated, unverified): ${cls.rationale}`);
     const flags: string[] = [];
+    if (cls.disagreement) flags.push(`classifier_disagreement: rules said ${cls.rulesIntent}, model said ${cls.aiIntent}`);
+    if (cls.aiError) flags.push(`ai_classification_unavailable:${cls.aiError}: rule-based result used`);
     if (cls.injectionSuspected) {
       confidence = Math.round(confidence * 0.7 * 100) / 100;
       flags.push("possible_prompt_injection: message contains instruction-like text; it was treated as data only");
       reasons.push("Message contains instruction-like text. It did not influence recipients, tools or approvals.");
     }
-    const score = priorityScore({ impact: rule.impact, urgency: rule.urgency, confidence, effort: rule.effort });
+    const score = scoreFor({ ...cls, confidence });
+    const classification = { by: cls.by, model: cls.model ?? null, location: cls.location ?? null, rulesIntent: cls.rulesIntent, aiIntent: cls.aiIntent ?? null, confidence };
+    const facts = [
+      { label: "Sender identity", value: payload.fromEmail, status: "unverified", source: "message header" },
+      { label: "NetworkRadar record", value: lk?.match === "verified" ? (lk.personId as string) : lk?.match === "candidate" ? "name-only candidates" : "not available", status: lk?.match === "verified" ? "verified" : "unverified", source: "networkradar", recordId: lk?.match === "verified" ? lk.personId : undefined },
+    ];
 
     const primaryId = await store.insertRecommendation(ws, {
       inboxItemId, actionClass: rule.actionClass,
       title: rule.needsReply ? `Reply to ${payload.fromName ?? payload.fromEmail}: ${rule.intent.replace("_", " ")}` : `${rule.intent.replace("_", " ")}: ${payload.fromName ?? payload.fromEmail}`,
-      why: { intent: rule.intent, reasons, flags, confidence, urgency: rule.urgency, impact: rule.impact, effort: rule.effort },
+      why: { intent: rule.intent, reasons, flags, confidence, urgency: rule.urgency, impact: rule.impact, effort: rule.effort, classification, facts },
       confidence, urgency: rule.urgency, impact: rule.impact, effort: rule.effort, score, provenance, isDemo: opts.isDemo,
     });
 
@@ -108,7 +120,7 @@ export async function triageInboxItem(deps: BrainDeps, ws: string, inboxItemId: 
         // recipient comes from the sender header only, never from message body text
         input: { to: payload.fromEmail, subject: draft.subject, body: draft.body },
         idempotencyKey: `reply:${inboxItemId}`,
-        sourceContext: { inboxItemId, eventId, recommendationId: primaryId, intent: rule.intent, draftSource: draft.source, flags: [...flags, ...draft.flags], provenance, isDemo: !!opts.isDemo, delivery: toolId === "email.export_reply_draft" ? "export_only_gmail_not_connected" : "gmail_draft" },
+        sourceContext: { inboxItemId, eventId, recommendationId: primaryId, intent: rule.intent, draftSource: draft.source, draftModel: draft.model ?? null, classification, facts, flags: [...flags, ...draft.flags], provenance, isDemo: !!opts.isDemo, delivery: toolId === "email.export_reply_draft" ? "export_only_gmail_not_connected" : "gmail_draft" },
       });
       if (q.status === "queued_for_approval") approvalId = q.approvalId;
       else reasons.push(`Reply could not be queued: ${q.status === "denied" ? q.reason : q.status}`);
