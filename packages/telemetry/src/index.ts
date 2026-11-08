@@ -273,6 +273,9 @@ export function sentryInitOptions(dsn: string): NodeOptions {
     dsn,
     tracesSampleRate: 0,
     maxBreadcrumbs: 0,
+    // Release-health sessions are separate envelopes that bypass beforeSend and carry the user id (`did`):
+    // found by the end-to-end test on CI. Not needed, so the integration is removed.
+    integrations: (defaults) => defaults.filter((i) => i.name !== "ProcessSession"),
     dataCollection: {
       userInfo: false,
       cookies: false,

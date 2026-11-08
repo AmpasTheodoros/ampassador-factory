@@ -280,5 +280,12 @@ describe("Sentry configuration (audited against @sentry/core 11.11.0 defaults)",
     expect(all.length).toBeGreaterThan(0); // an event really was produced
     expect(all).not.toMatch(/jane@corp|abcdefghijklmnop|S3cretPw|private text|token=abc|u-1/);
     expect(all).toContain("j9");
+    expect(all).not.toContain('"type":"session"'); // release-health sessions carry the user id and bypass beforeSend
+  });
+  it("the session integration is removed from the default integrations (deterministic, timing-independent)", () => {
+    const o = sentryInitOptions("https://public@o0.ingest.sentry.io/1");
+    const integrations = o.integrations as (d: { name: string }[]) => { name: string }[];
+    const kept = integrations([{ name: "ProcessSession" }, { name: "Http" }]);
+    expect(kept.map((i) => i.name)).toEqual(["Http"]);
   });
 });
